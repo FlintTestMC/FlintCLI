@@ -1,0 +1,48 @@
+{
+  "name": "lever_powers_adjacent_block",
+  "description": "Verify that a lever can be placed and powers an adjacent block when activated",
+  "cleanup": {
+    "from": [5, 95, 5],
+    "to": [15, 105, 15]
+  },
+  "actions": [
+    {
+      "tick": 0,
+      "action": "setblock",
+      "pos": [10, 100, 10],
+      "block": "minecraft:stone"
+    },
+    {
+      "tick": 1,
+      "action": "setblock",
+      "pos": [10, 101, 10],
+      "block": "minecraft:lever[powered=false,face=floor]"
+    },
+    {
+      "tick": 2,
+      "action": "assert_block",
+      "pos": [10, 101, 10],
+      "block": "minecraft:lever"
+    },
+    {
+      "tick": 2,
+      "action": "assert_block_state",
+      "pos": [10, 101, 10],
+      "property": "powered",
+      "value": "false"
+    },
+    {
+      "tick": 3,
+      "action": "setblock",
+      "pos": [10, 101, 10],
+      "block": "minecraft:lever[powered=true,face=floor]"
+    },
+    {
+      "tick": 5,
+      "action": "assert_block_state",
+      "pos": [10, 101, 10],
+      "property": "powered",
+      "value": "true"
+    }
+  ]
+}

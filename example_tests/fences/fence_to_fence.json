@@ -1,0 +1,36 @@
+{
+  "name": "fence_connects_to_fence",
+  "description": "Verify that two adjacent oak fences connect to each other",
+  "cleanup": {
+    "from": [0, 95, 0],
+    "to": [10, 105, 10]
+  },
+  "actions": [
+    {
+      "tick": 0,
+      "action": "setblock",
+      "pos": [5, 100, 5],
+      "block": "minecraft:oak_fence"
+    },
+    {
+      "tick": 1,
+      "action": "setblock",
+      "pos": [6, 100, 5],
+      "block": "minecraft:oak_fence"
+    },
+    {
+      "tick": 3,
+      "action": "assert_block_state",
+      "pos": [5, 100, 5],
+      "property": "east",
+      "value": "true"
+    },
+    {
+      "tick": 3,
+      "action": "assert_block_state",
+      "pos": [6, 100, 5],
+      "property": "west",
+      "value": "true"
+    }
+  ]
+}

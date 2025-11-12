@@ -1,0 +1,49 @@
+{
+  "name": "fence_connects_to_block",
+  "description": "Verify that an oak fence connects to a solid block placed adjacent to it",
+  "cleanup": {
+    "from": [-5, 95, -5],
+    "to": [5, 105, 5]
+  },
+  "actions": [
+    {
+      "tick": 0,
+      "action": "setblock",
+      "pos": [0, 100, 0],
+      "block": "minecraft:oak_fence"
+    },
+    {
+      "tick": 1,
+      "action": "assert_block",
+      "pos": [0, 100, 0],
+      "block": "minecraft:oak_fence"
+    },
+    {
+      "tick": 1,
+      "action": "assert_block_state",
+      "pos": [0, 100, 0],
+      "property": "east",
+      "value": "false"
+    },
+    {
+      "tick": 1,
+      "action": "assert_block_state",
+      "pos": [0, 100, 0],
+      "property": "west",
+      "value": "false"
+    },
+    {
+      "tick": 2,
+      "action": "setblock",
+      "pos": [1, 100, 0],
+      "block": "minecraft:stone"
+    },
+    {
+      "tick": 4,
+      "action": "assert_block_state",
+      "pos": [0, 100, 0],
+      "property": "east",
+      "value": "true"
+    }
+  ]
+}

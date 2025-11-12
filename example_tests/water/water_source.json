@@ -1,0 +1,36 @@
+{
+  "name": "water_source_block",
+  "description": "Verify that a water source block can be placed and detected",
+  "cleanup": {
+    "from": [15, 95, 15],
+    "to": [30, 105, 30]
+  },
+  "actions": [
+    {
+      "tick": 0,
+      "action": "fill",
+      "from": [20, 100, 20],
+      "to": [25, 100, 25],
+      "block": "minecraft:glass"
+    },
+    {
+      "tick": 1,
+      "action": "setblock",
+      "pos": [22, 101, 22],
+      "block": "minecraft:water"
+    },
+    {
+      "tick": 3,
+      "action": "assert_block",
+      "pos": [22, 101, 22],
+      "block": "minecraft:water"
+    },
+    {
+      "tick": 3,
+      "action": "assert_block_state",
+      "pos": [22, 101, 22],
+      "property": "level",
+      "value": "0"
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "name": "basic_block_placement",
+  "description": "Simple test to verify basic block placement and detection",
+  "cleanup": {
+    "from": [-5, 60, -5],
+    "to": [5, 70, 5]
+  },
+  "actions": [
+    {
+      "tick": 0,
+      "action": "setblock",
+      "pos": [0, 64, 0],
+      "block": "minecraft:stone"
+    },
+    {
+      "tick": 1,
+      "action": "assert_block",
+      "pos": [0, 64, 0],
+      "block": "minecraft:stone"
+    },
+    {
+      "tick": 2,
+      "action": "setblock",
+      "pos": [1, 64, 0],
+      "block": "minecraft:oak_planks"
+    },
+    {
+      "tick": 3,
+      "action": "assert_block",
+      "pos": [1, 64, 0],
+      "block": "minecraft:oak_planks"
+    }
+  ]
+}

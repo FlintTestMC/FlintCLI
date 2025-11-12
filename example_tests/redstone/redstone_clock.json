@@ -1,0 +1,112 @@
+{
+  "name": "repeater_feedback_clock",
+  "description": "Test a redstone clock with two repeaters side-by-side facing opposite directions",
+  "cleanup": {
+    "from": [30, 95, 30],
+    "to": [40, 105, 40]
+  },
+  "actions": [
+    {
+      "tick": 0,
+      "action": "fill",
+      "from": [35, 100, 35],
+      "to": [37, 100, 37],
+      "block": "minecraft:stone"
+    },
+    {
+      "tick": 1,
+      "action": "setblock",
+      "pos": [35, 101, 35],
+      "block": "minecraft:redstone_wire"
+    },
+    {
+      "tick": 2,
+      "action": "setblock",
+      "pos": [35, 101, 36],
+      "block": "minecraft:repeater[facing=south,delay=1,locked=false,powered=false]"
+    },
+    {
+      "tick": 3,
+      "action": "setblock",
+      "pos": [36, 101, 36],
+      "block": "minecraft:repeater[facing=north,delay=1,locked=false,powered=false]"
+    },
+    {
+      "tick": 4,
+      "action": "setblock",
+      "pos": [35, 101, 37],
+      "block": "minecraft:redstone_wire"
+    },
+    {
+      "tick": 5,
+      "action": "setblock",
+      "pos": [36, 101, 37],
+      "block": "minecraft:redstone_wire"
+    },
+    {
+      "tick": 6,
+      "action": "setblock",
+      "pos": [36, 101, 35],
+      "block": "minecraft:redstone_wire"
+    },
+    {
+      "tick": 7,
+      "action": "assert_block",
+      "pos": [35, 101, 36],
+      "block": "minecraft:repeater"
+    },
+    {
+      "tick": 7,
+      "action": "assert_block",
+      "pos": [36, 101, 36],
+      "block": "minecraft:repeater"
+    },
+    {
+      "tick": 8,
+      "action": "setblock",
+      "pos": [37, 101, 35],
+      "block": "minecraft:redstone_torch[lit=true]"
+    },
+    {
+      "tick": 9,
+      "action": "setblock",
+      "pos": [37, 101, 35],
+      "block": "minecraft:air"
+    },
+    {
+      "tick": 10,
+      "action": "assert_block_state",
+      "pos": [36, 101, 36],
+      "property": "powered",
+      "value": "false"
+    },
+    {
+      "tick": 11,
+      "action": "assert_block_state",
+      "pos": [36, 101, 36],
+      "property": "powered",
+      "value": "true"
+    },
+    {
+      "tick": 12,
+      "action": "assert_block_state",
+      "pos": [36, 101, 36],
+      "property": "powered",
+      "value": "false"
+    },
+    {
+      "tick": 14,
+      "action": "assert_block_state",
+      "pos": [36, 101, 36],
+      "property": "powered",
+      "value": "false"
+    },
+    {
+      "tick": 15,
+      "action": "assert_block_state",
+      "pos": [36, 101, 36],
+      "property": "powered",
+      "value": "true"
+    }
+  ]
+}
