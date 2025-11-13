@@ -67,12 +67,13 @@ jobs:
         EOF
 
         # Create ops.json to give bot operator permissions
-        # The bot will connect with username "flintmc_bot" or similar
+        # The bot connects as "FlintMC_TestBot" (see bot.rs)
+        # This prevents spam kicks when running multiple commands rapidly
         cat > ops.json << EOF
         [
           {
             "uuid": "00000000-0000-0000-0000-000000000000",
-            "name": "flintmc_bot",
+            "name": "FlintMC_TestBot",
             "level": 4,
             "bypassesPlayerLimit": false
           }

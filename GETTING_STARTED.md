@@ -12,8 +12,9 @@ FlintMC is now ready to use! Here's how to get started.
 
 2. **Minecraft Server** (1.21.8+):
    - You need a running Minecraft server
-   - The bot needs **operator permissions** to run commands
+   - The bot needs **operator permissions** to run commands and avoid spam kicks
    - Give the bot op: `/op FlintMC_TestBot`
+   - **Important**: Without op permissions, the bot will be kicked for spamming when running multiple tests
 
 ## Building
 
