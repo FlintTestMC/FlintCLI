@@ -82,7 +82,6 @@ jobs:
         tail -f server_input | java -Xmx2G -Xms1G -jar server.jar nogui &
         SERVER_PID=$!
         echo "SERVER_PID=$SERVER_PID" >> $GITHUB_ENV
-        exec 3>server_input  # Open pipe for writing
 
         # Wait for server to start (look for "Done" message in logs)
         echo "Waiting for server to start..."
@@ -94,8 +93,8 @@ jobs:
         echo "Server started successfully"
         sleep 2
 
-        # Op the bot player
-        echo "op FlintMC_TestBot" >&3
+        # Op the bot player by writing directly to the pipe
+        echo "op FlintMC_TestBot" > server_input
         echo "Sent op command for FlintMC_TestBot"
         sleep 2
 
