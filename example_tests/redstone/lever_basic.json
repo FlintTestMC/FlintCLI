@@ -11,39 +11,39 @@
   },
   "timeline": [
     {
-      "at": 1,
+      "at": 0,
       "do": "place",
       "pos": [10, 100, 10],
       "block": "minecraft:stone"
     },
     {
-      "at": 2,
+      "at": 1,
       "do": "place",
       "pos": [10, 101, 10],
       "block": "minecraft:lever[powered=false,face=floor]"
     },
     {
-      "at": 3,
+      "at": 2,
       "do": "assert",
       "checks": [
         {"pos": [10, 101, 10], "is": "minecraft:lever"}
       ]
     },
     {
-      "at": 3,
+      "at": 2,
       "do": "assert_state",
       "pos": [10, 101, 10],
       "state": "powered",
       "values": ["false"]
     },
     {
-      "at": 4,
+      "at": 3,
       "do": "place",
       "pos": [10, 101, 10],
       "block": "minecraft:lever[powered=true,face=floor]"
     },
     {
-      "at": 6,
+      "at": 5,
       "do": "assert_state",
       "pos": [10, 101, 10],
       "state": "powered",

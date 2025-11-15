@@ -11,26 +11,26 @@
   },
   "timeline": [
     {
-      "at": 1,
+      "at": 0,
       "do": "place",
       "pos": [5, 100, 5],
       "block": "minecraft:oak_fence"
     },
     {
-      "at": 2,
+      "at": 1,
       "do": "place",
       "pos": [6, 100, 5],
       "block": "minecraft:oak_fence"
     },
     {
-      "at": 4,
+      "at": 3,
       "do": "assert_state",
       "pos": [5, 100, 5],
       "state": "east",
       "values": ["true"]
     },
     {
-      "at": 4,
+      "at": 3,
       "do": "assert_state",
       "pos": [6, 100, 5],
       "state": "west",

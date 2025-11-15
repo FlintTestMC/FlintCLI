@@ -14,13 +14,13 @@
   },
   "timeline": [
     {
-      "at": 1,
+      "at": 0,
       "do": "fill",
       "region": [[5, 100, 5], [7, 100, 7]],
       "with": "minecraft:stone"
     },
     {
-      "at": 2,
+      "at": 1,
       "do": "place_each",
       "blocks": [
         {"pos": [5, 101, 5], "block": "minecraft:redstone_wire"},
@@ -30,19 +30,15 @@
       ]
     },
     {
+      "at": 2,
+      "do": "place_each",
+      "blocks": [
+        {"pos": [5, 101, 6], "block": "minecraft:repeater[facing=south,delay=1]"},
+        {"pos": [6, 101, 6], "block": "minecraft:repeater[facing=north,delay=1]"}
+      ]
+    },
+    {
       "at": 3,
-      "do": "place",
-      "pos": [5, 101, 6],
-      "block": "minecraft:repeater[facing=south,delay=1]"
-    },
-    {
-      "at": 4,
-      "do": "place",
-      "pos": [6, 101, 6],
-      "block": "minecraft:repeater[facing=north,delay=1]"
-    },
-    {
-      "at": 5,
       "do": "assert",
       "checks": [
         {"pos": [5, 101, 6], "is": "minecraft:repeater"},
@@ -50,22 +46,22 @@
       ]
     },
     {
-      "at": 6,
+      "at": 4,
       "do": "place",
       "pos": [7, 101, 5],
       "block": "minecraft:redstone_torch"
     },
     {
-      "at": 7,
+      "at": 5,
       "do": "remove",
       "pos": [7, 101, 5]
     },
     {
-      "at": [8, 9, 10, 11, 12],
+      "at": [6, 7, 8, 9, 10],
       "do": "assert_state",
-      "pos": [6, 101, 6],
-      "state": "powered",
-      "values": ["false", "true", "false", "false", "true"]
+      "pos": [6, 101, 5],
+      "state": "power",
+      "values": ["14", "0", "14", "0", "14"]
     }
   ]
 }

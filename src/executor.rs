@@ -44,6 +44,9 @@ impl TestExecutor {
                 "c".cyan().bold()
             );
 
+            // Send chat message to inform player
+            self.bot.send_command("say Waiting for step/continue (s = step, c = continue)").await?;
+
             // First, drain any old messages from the chat queue
             while self
                 .bot
@@ -61,12 +64,20 @@ impl TestExecutor {
                     .recv_chat_timeout(std::time::Duration::from_millis(100))
                     .await
                 {
-                    // Look for commands in the message
+                    // Skip messages from the bot itself (contains "Waiting for step/continue")
+                    if message.contains("Waiting for step/continue") {
+                        continue;
+                    }
+
+                    // Look for commands in the message - match exact commands only
                     let msg_lower = message.to_lowercase();
-                    if msg_lower.contains(" s") || msg_lower.contains(" step") {
+                    let trimmed = msg_lower.trim();
+
+                    // Match the message ending with just "s" or "c" (player commands)
+                    if trimmed.ends_with(" s") || trimmed == "s" || trimmed.ends_with(" step") || trimmed == "step" {
                         println!("  {} Received 's' from chat", "→".blue());
                         return Ok(false); // Step mode
-                    } else if msg_lower.contains(" c") || msg_lower.contains(" continue") {
+                    } else if trimmed.ends_with(" c") || trimmed == "c" || trimmed.ends_with(" continue") || trimmed == "continue" {
                         println!("  {} Received 'c' from chat", "→".blue());
                         return Ok(true); // Continue mode
                     }
@@ -155,6 +166,74 @@ impl TestExecutor {
 
     pub async fn connect(&mut self, server: &str) -> Result<()> {
         self.bot.connect(server).await
+    }
+
+    /// Sprint ticks and capture the time taken from server output
+    /// Returns the ms per tick from the server's sprint completion message
+    async fn sprint_ticks(&mut self, ticks: u32) -> Result<u64> {
+        // Clear any pending chat messages
+        while self
+            .bot
+            .recv_chat_timeout(std::time::Duration::from_millis(10))
+            .await
+            .is_some()
+        {
+            // Discard old messages
+        }
+
+        // Send the sprint command
+        self.bot
+            .send_command(&format!("tick sprint {}", ticks))
+            .await?;
+
+        // Wait for the "Sprint completed" message
+        // Server message format: "Sprint completed with X ticks per second, or Y ms per tick"
+        let timeout = std::time::Duration::from_secs(30);
+        let start = std::time::Instant::now();
+
+        while start.elapsed() < timeout {
+            if let Some(message) = self
+                .bot
+                .recv_chat_timeout(std::time::Duration::from_millis(100))
+                .await
+            {
+                // Look for "Sprint completed" message
+                if message.contains("Sprint completed") {
+                    // Try to extract ms per tick
+                    // Format: "... or X ms per tick"
+                    if let Some(ms_part) = message.split("or ").nth(1) {
+                        if let Some(ms_str) = ms_part.split(" ms per tick").next() {
+                            if let Ok(ms) = ms_str.trim().parse::<f64>() {
+                                let ms_rounded = ms.ceil() as u64;
+                                println!(
+                                    "    {} Sprint {} ticks completed in {} ms per tick",
+                                    "⚡".dimmed(),
+                                    ticks,
+                                    ms_rounded
+                                );
+                                // Return total time: ms per tick * number of ticks
+                                return Ok(ms_rounded * ticks as u64);
+                            }
+                        }
+                    }
+                    // If we found the message but couldn't parse, use default
+                    println!(
+                        "    {} Sprint {} ticks completed (timing not parsed)",
+                        "⚡".dimmed(),
+                        ticks
+                    );
+                    return Ok(200);
+                }
+            }
+        }
+
+        // Timeout - return default
+        println!(
+            "    {} Sprint {} ticks (no completion message received)",
+            "⚡".dimmed(),
+            ticks
+        );
+        Ok(200)
     }
 
     pub async fn run_tests_parallel(
@@ -285,12 +364,57 @@ impl TestExecutor {
                 stepping_mode = !should_continue;
             }
 
-            // Step to next tick
+            // Advance to next tick (step or sprint depending on mode)
             if current_tick < max_global_tick {
-                self.bot.send_command("tick step 1").await?;
-                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                if stepping_mode {
+                    // In stepping mode, only advance one tick at a time
+                    self.sprint_ticks(1).await?;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                    current_tick += 1;
+                } else {
+                    // In continue mode, sprint to next event or breakpoint
+                    // Calculate ticks to next event
+                    let mut next_event_tick = max_global_tick + 1;
+
+                    // Find next tick with actions
+                    for tick in (current_tick + 1)..=max_global_tick {
+                        if global_timeline.contains_key(&tick) {
+                            next_event_tick = tick;
+                            break;
+                        }
+                    }
+
+                    // Find next breakpoint
+                    for tick in (current_tick + 1)..=max_global_tick {
+                        if all_breakpoints.contains(&tick) {
+                            next_event_tick = next_event_tick.min(tick);
+                            break;
+                        }
+                    }
+
+                    // Calculate how many ticks to sprint
+                    let ticks_to_sprint = if next_event_tick <= max_global_tick {
+                        next_event_tick - current_tick
+                    } else {
+                        max_global_tick - current_tick
+                    };
+
+                    // Sprint the ticks
+                    let sprint_time_ms = if ticks_to_sprint > 0 {
+                        self.sprint_ticks(ticks_to_sprint).await?
+                    } else {
+                        0
+                    };
+
+                    // Use sprint timing for retry delay (ensure at least 200ms)
+                    let retry_delay = sprint_time_ms.max(200);
+                    tokio::time::sleep(tokio::time::Duration::from_millis(retry_delay)).await;
+
+                    current_tick += ticks_to_sprint;
+                }
+            } else {
+                current_tick += 1;
             }
-            current_tick += 1;
         }
 
         // Unfreeze time
@@ -342,6 +466,29 @@ impl TestExecutor {
                 }
             })
             .collect();
+
+        // Send test results summary to chat
+        let total_passed = results.iter().filter(|r| r.success).count();
+        let total_failed = results.len() - total_passed;
+        let summary = format!(
+            "Tests complete: {}/{} passed, {} failed",
+            total_passed,
+            results.len(),
+            total_failed
+        );
+        self.bot.send_command(&format!("say {}", summary)).await?;
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        // Send individual test results to chat
+        for result in &results {
+            let status = if result.success { "PASS" } else { "FAIL" };
+            let msg = format!("say [{}] {}", status, result.test_name);
+            self.bot.send_command(&msg).await?;
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        }
+
+        // Give messages time to be sent before potential disconnect
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
         Ok(results)
     }

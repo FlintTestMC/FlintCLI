@@ -11,26 +11,26 @@
   },
   "timeline": [
     {
-      "at": 1,
+      "at": 0,
       "do": "fill",
       "region": [[5, 100, 5], [10, 100, 10]],
       "with": "minecraft:glass"
     },
     {
-      "at": 2,
+      "at": 1,
       "do": "place",
       "pos": [7, 101, 7],
       "block": "minecraft:water"
     },
     {
-      "at": 4,
+      "at": 3,
       "do": "assert",
       "checks": [
         {"pos": [7, 101, 7], "is": "minecraft:water"}
       ]
     },
     {
-      "at": 4,
+      "at": 3,
       "do": "assert_state",
       "pos": [7, 101, 7],
       "state": "level",
