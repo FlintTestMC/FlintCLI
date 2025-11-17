@@ -1,10 +1,12 @@
 mod bot;
 mod executor;
-mod test_spec;
 
 use anyhow::Result;
 use clap::Parser;
 use colored::Colorize;
+use flint_core::loader::TestLoader;
+use flint_core::spatial::calculate_test_offset_default;
+use flint_core::test_spec::TestSpec;
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 
@@ -14,7 +16,7 @@ use tracing_subscriber::EnvFilter;
 struct Args {
     /// Path to test file or directory
     #[arg(value_name = "PATH")]
-    path: PathBuf,
+    path: Option<PathBuf>,
 
     /// Server address (e.g., localhost:25565)
     #[arg(short, long)]
@@ -31,6 +33,10 @@ struct Args {
     /// Use in-game chat for breakpoint control (type 's' or 'c' in chat)
     #[arg(long)]
     chat_control: bool,
+
+    /// Filter tests by tags (can be specified multiple times)
+    #[arg(short = 't', long = "tag")]
+    tags: Vec<String>,
 }
 
 #[tokio::main]
@@ -47,14 +53,30 @@ async fn main() -> Result<()> {
     println!("{}", "FlintMC - Minecraft Testing Framework".green().bold());
     println!();
 
-    // Collect test files
-    let test_files = collect_test_files(&args.path, args.recursive)?;
+    // Collect test files - use tags if provided, otherwise use path
+    let test_files = if !args.tags.is_empty() {
+        println!("{} Filtering by tags: {:?}", "→".blue(), args.tags);
+        TestLoader::collect_by_tags(&args.tags)?
+    } else if let Some(ref path) = args.path {
+        TestLoader::collect_test_files(path, args.recursive)?
+    } else {
+        eprintln!(
+            "{} Must specify either a path or tags to filter by",
+            "Error:".red().bold()
+        );
+        std::process::exit(1);
+    };
 
     if test_files.is_empty() {
+        let location = if !args.tags.is_empty() {
+            format!("with tags: {:?}", args.tags)
+        } else {
+            format!("at: {}", args.path.as_ref().unwrap().display())
+        };
         eprintln!(
-            "{} No test files found at: {}",
+            "{} No test files found {}",
             "Error:".red().bold(),
-            args.path.display()
+            location
         );
         std::process::exit(1);
     }
@@ -82,9 +104,9 @@ async fn main() -> Result<()> {
     let mut tests_with_offsets = Vec::new();
 
     for (test_index, test_file) in test_files.iter().enumerate() {
-        match test_spec::TestSpec::from_file(test_file) {
+        match TestSpec::from_file(test_file) {
             Ok(test) => {
-                let offset = calculate_test_offset(test_index, total_tests);
+                let offset = calculate_test_offset_default(test_index, total_tests);
                 println!(
                     "  {} Grid position: {} (offset: [{}, {}, {}])",
                     "→".blue(),
@@ -145,64 +167,3 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn collect_test_files(path: &PathBuf, recursive: bool) -> Result<Vec<PathBuf>> {
-    let mut test_files = Vec::new();
-
-    if path.is_file() {
-        if path.extension().and_then(|s| s.to_str()) == Some("json") {
-            test_files.push(path.clone());
-        }
-    } else if path.is_dir() {
-        if recursive {
-            collect_json_files_recursive(path, &mut test_files)?;
-        } else {
-            for entry in std::fs::read_dir(path)? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("json") {
-                    test_files.push(path);
-                }
-            }
-        }
-    }
-
-    test_files.sort();
-    Ok(test_files)
-}
-
-fn collect_json_files_recursive(dir: &PathBuf, files: &mut Vec<PathBuf>) -> Result<()> {
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_json_files_recursive(&path, files)?;
-        } else if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("json") {
-            files.push(path);
-        }
-    }
-    Ok(())
-}
-
-/// Calculate grid offset for test at given index
-/// Tests are arranged in a square grid centered at (0, 0)
-/// Each cell is 16x16 blocks (15 test area + 1 spacing)
-fn calculate_test_offset(test_index: usize, total_tests: usize) -> [i32; 3] {
-    const CELL_SIZE: i32 = 16; // 15 blocks + 1 spacing
-
-    // Calculate grid size (ceil(sqrt(N)))
-    let grid_size = (total_tests as f64).sqrt().ceil() as i32;
-
-    // Calculate position in grid
-    let grid_x = (test_index as i32) % grid_size;
-    let grid_z = (test_index as i32) / grid_size;
-
-    // Calculate base offset to center the grid at (0, 0)
-    let base_offset = -(grid_size * CELL_SIZE) / 2;
-
-    // Calculate world offset for this test
-    [
-        base_offset + grid_x * CELL_SIZE,
-        0,
-        base_offset + grid_z * CELL_SIZE,
-    ]
-}

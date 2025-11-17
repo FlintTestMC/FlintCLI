@@ -5,7 +5,7 @@ edition = "2024"
 license = "MIT"
 
 [dependencies]
-azalea = { git = "https://github.com/azalea-rs/azalea" }
+azalea = { git = "https://github.com/azalea-rs/azalea", rev = "f464f01" }
 tokio = { version = "1.48", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -17,3 +17,4 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 parking_lot = "0.12"
 futures = "0.3"
+flint-core = { git = "https://github.com/FlintTestMC/flint-core", rev = "b2e776a" }

@@ -1,8 +1,9 @@
 use crate::bot::TestBot;
-use crate::test_spec::{ActionType, TestSpec, TimelineEntry};
 use anyhow::Result;
 use colored::Colorize;
-use std::collections::HashMap;
+use flint_core::results::TestResult;
+use flint_core::test_spec::{ActionType, TestSpec, TimelineEntry};
+use flint_core::timeline::TimelineAggregate;
 use std::io::{self, Write};
 
 pub struct TestExecutor {
@@ -247,42 +248,17 @@ impl TestExecutor {
             tests_with_offsets.len()
         );
 
-        // Build global merged timeline
-        let mut global_timeline: HashMap<u32, Vec<(usize, &TimelineEntry, usize)>> = HashMap::new();
-        let mut max_global_tick = 0;
-        let mut all_breakpoints = std::collections::HashSet::new();
+        // Build global merged timeline using flint-core
+        let aggregate = TimelineAggregate::from_tests(tests_with_offsets);
 
-        for (test_idx, (test, _offset)) in tests_with_offsets.iter().enumerate() {
-            let max_tick = test.max_tick();
-            if max_tick > max_global_tick {
-                max_global_tick = max_tick;
-            }
-
-            // Collect breakpoints from this test
-            for &bp in &test.breakpoints {
-                all_breakpoints.insert(bp);
-            }
-
-            // Expand timeline entries with multiple ticks
-            for entry in &test.timeline {
-                let ticks = entry.at.to_vec();
-                for (value_idx, tick) in ticks.iter().enumerate() {
-                    global_timeline
-                        .entry(*tick)
-                        .or_default()
-                        .push((test_idx, entry, value_idx));
-                }
-            }
-        }
-
-        println!("  Global timeline: {} ticks", max_global_tick);
-        println!("  {} unique tick steps with actions", global_timeline.len());
-        if !all_breakpoints.is_empty() {
-            let mut sorted_breakpoints: Vec<_> = all_breakpoints.iter().collect();
+        println!("  Global timeline: {} ticks", aggregate.max_tick);
+        println!("  {} unique tick steps with actions", aggregate.unique_tick_count());
+        if !aggregate.breakpoints.is_empty() {
+            let mut sorted_breakpoints: Vec<_> = aggregate.breakpoints.iter().collect();
             sorted_breakpoints.sort();
             println!(
                 "  {} breakpoints at ticks: {:?}",
-                all_breakpoints.len(),
+                aggregate.breakpoints.len(),
                 sorted_breakpoints
             );
         }
@@ -323,8 +299,8 @@ impl TestExecutor {
 
         // Execute merged timeline
         let mut current_tick = 0;
-        while current_tick <= max_global_tick {
-            if let Some(entries) = global_timeline.get(&current_tick) {
+        while current_tick <= aggregate.max_tick {
+            if let Some(entries) = aggregate.timeline.get(&current_tick) {
                 for (test_idx, entry, value_idx) in entries {
                     let (test, offset) = &tests_with_offsets[*test_idx];
 
@@ -354,7 +330,7 @@ impl TestExecutor {
 
             // Check for breakpoint at end of this tick (before stepping)
             // Or if we're in stepping mode, break at every tick
-            if all_breakpoints.contains(&current_tick) || stepping_mode {
+            if aggregate.breakpoints.contains(&current_tick) || stepping_mode {
                 let should_continue = self
                     .wait_for_step(&format!(
                         "End of tick {} (before step to next tick)",
@@ -365,7 +341,7 @@ impl TestExecutor {
             }
 
             // Advance to next tick (step or sprint depending on mode)
-            if current_tick < max_global_tick {
+            if current_tick < aggregate.max_tick {
                 if stepping_mode {
                     // In stepping mode, only advance one tick at a time
                     self.sprint_ticks(1).await?;
@@ -373,30 +349,15 @@ impl TestExecutor {
                     current_tick += 1;
                 } else {
                     // In continue mode, sprint to next event or breakpoint
-                    // Calculate ticks to next event
-                    let mut next_event_tick = max_global_tick + 1;
-
-                    // Find next tick with actions
-                    for tick in (current_tick + 1)..=max_global_tick {
-                        if global_timeline.contains_key(&tick) {
-                            next_event_tick = tick;
-                            break;
-                        }
-                    }
-
-                    // Find next breakpoint
-                    for tick in (current_tick + 1)..=max_global_tick {
-                        if all_breakpoints.contains(&tick) {
-                            next_event_tick = next_event_tick.min(tick);
-                            break;
-                        }
-                    }
+                    // Use the aggregate's helper method to find the next event
+                    let next_event_tick = aggregate.next_event_tick(current_tick)
+                        .unwrap_or(aggregate.max_tick + 1);
 
                     // Calculate how many ticks to sprint
-                    let ticks_to_sprint = if next_event_tick <= max_global_tick {
+                    let ticks_to_sprint = if next_event_tick <= aggregate.max_tick {
                         next_event_tick - current_tick
                     } else {
-                        max_global_tick - current_tick
+                        aggregate.max_tick - current_tick
                     };
 
                     // Sprint the ticks
@@ -460,9 +421,11 @@ impl TestExecutor {
                     );
                 }
 
-                TestResult {
-                    test_name: test.name.clone(),
-                    success,
+                if success {
+                    TestResult::new(test.name.clone())
+                } else {
+                    TestResult::new(test.name.clone())
+                        .with_failure_reason(format!("{} assertions failed", failed))
                 }
             })
             .collect();
@@ -677,8 +640,3 @@ impl TestExecutor {
     }
 }
 
-#[derive(Debug)]
-pub struct TestResult {
-    pub test_name: String,
-    pub success: bool,
-}
