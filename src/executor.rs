@@ -6,6 +6,20 @@ use flint_core::test_spec::{ActionType, TestSpec, TimelineEntry};
 use flint_core::timeline::TimelineAggregate;
 use std::io::{self, Write};
 
+// Constants for timing and retries
+const CHAT_DRAIN_TIMEOUT_MS: u64 = 10;
+const CHAT_POLL_TIMEOUT_MS: u64 = 100;
+const COMMAND_DELAY_MS: u64 = 100;
+const CLEANUP_DELAY_MS: u64 = 200;
+const BLOCK_POLL_ATTEMPTS: u32 = 10;
+const BLOCK_POLL_DELAY_MS: u64 = 50;
+const PLACE_EACH_DELAY_MS: u64 = 10;
+const GAMETIME_QUERY_TIMEOUT_SECS: u64 = 5;
+const TICK_STEP_TIMEOUT_SECS: u64 = 5;
+const TICK_STEP_POLL_MS: u64 = 50;
+const SPRINT_TIMEOUT_SECS: u64 = 30;
+const MIN_RETRY_DELAY_MS: u64 = 200;
+
 pub struct TestExecutor {
     bot: TestBot,
     use_chat_control: bool,
@@ -27,6 +41,37 @@ impl TestExecutor {
 
     pub fn set_chat_control(&mut self, enabled: bool) {
         self.use_chat_control = enabled;
+    }
+
+    fn apply_offset(&self, pos: [i32; 3], offset: [i32; 3]) -> [i32; 3] {
+        [pos[0] + offset[0], pos[1] + offset[1], pos[2] + offset[2]]
+    }
+
+    /// Drain old chat messages
+    async fn drain_chat_messages(&mut self) {
+        while self
+            .bot
+            .recv_chat_timeout(std::time::Duration::from_millis(CHAT_DRAIN_TIMEOUT_MS))
+            .await
+            .is_some()
+        {
+            // Discard old messages
+        }
+    }
+
+    /// Normalize block name for comparison (remove minecraft: prefix and underscores)
+    fn normalize_block_name(name: &str) -> String {
+        name.trim_start_matches("minecraft:")
+            .to_lowercase()
+            .replace("_", "")
+    }
+
+    /// Check if actual block matches expected block name
+    fn block_matches(actual: &str, expected: &str) -> bool {
+        let actual_lower = actual.to_lowercase();
+        let expected_normalized = Self::normalize_block_name(expected);
+        actual_lower.contains(&expected_normalized)
+            || actual_lower.replace("_", "").contains(&expected_normalized)
     }
 
     /// Returns true to continue, false to step to next tick only
@@ -51,20 +96,13 @@ impl TestExecutor {
                 .await?;
 
             // First, drain any old messages from the chat queue
-            while self
-                .bot
-                .recv_chat_timeout(std::time::Duration::from_millis(10))
-                .await
-                .is_some()
-            {
-                // Discard old messages
-            }
+            self.drain_chat_messages().await;
 
             // Now wait for a fresh chat command
             loop {
                 if let Some(message) = self
                     .bot
-                    .recv_chat_timeout(std::time::Duration::from_millis(100))
+                    .recv_chat_timeout(std::time::Duration::from_millis(CHAT_POLL_TIMEOUT_MS))
                     .await
                 {
                     // Skip messages from the bot itself (contains "Waiting for step/continue")
@@ -114,40 +152,26 @@ impl TestExecutor {
         }
     }
 
-    fn apply_offset(&self, pos: [i32; 3], offset: [i32; 3]) -> [i32; 3] {
-        [pos[0] + offset[0], pos[1] + offset[1], pos[2] + offset[2]]
-    }
-
     /// Poll for a block at the given position with retries
     /// This handles timing issues in CI environments where block updates may take longer
     async fn poll_block_with_retry(
         &self,
         world_pos: [i32; 3],
         expected_block: &str,
-        max_attempts: u32,
-        delay_ms: u64,
     ) -> Result<Option<String>> {
-        let expected_name = expected_block
-            .trim_start_matches("minecraft:")
-            .to_lowercase()
-            .replace("_", "");
-
-        for attempt in 0..max_attempts {
+        for attempt in 0..BLOCK_POLL_ATTEMPTS {
             let block = self.bot.get_block(world_pos).await?;
 
             // Check if the block matches what we expect
-            if let Some(ref actual) = block {
-                let actual_lower = actual.to_lowercase();
-                if actual_lower.contains(&expected_name)
-                    || actual_lower.replace("_", "").contains(&expected_name)
-                {
-                    return Ok(block);
-                }
+            if let Some(ref actual) = block
+                && Self::block_matches(actual, expected_block)
+            {
+                return Ok(block);
             }
 
             // If not the last attempt, wait before retrying
-            if attempt < max_attempts - 1 {
-                tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+            if attempt < BLOCK_POLL_ATTEMPTS - 1 {
+                tokio::time::sleep(tokio::time::Duration::from_millis(BLOCK_POLL_DELAY_MS)).await;
             }
         }
 
@@ -160,16 +184,14 @@ impl TestExecutor {
         &self,
         world_pos: [i32; 3],
         state: &str,
-        max_attempts: u32,
-        delay_ms: u64,
     ) -> Result<Option<String>> {
-        for attempt in 0..max_attempts {
+        for attempt in 0..BLOCK_POLL_ATTEMPTS {
             let state_value = self.bot.get_block_state_property(world_pos, state).await?;
             if state_value.is_some() {
                 return Ok(state_value);
             }
-            if attempt < max_attempts - 1 {
-                tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+            if attempt < BLOCK_POLL_ATTEMPTS - 1 {
+                tokio::time::sleep(tokio::time::Duration::from_millis(BLOCK_POLL_DELAY_MS)).await;
             }
         }
         Ok(None)
@@ -183,28 +205,19 @@ impl TestExecutor {
     /// Returns the game time in ticks
     async fn query_gametime(&mut self) -> Result<u32> {
         // Clear any pending chat messages
-        while self
-            .bot
-            .recv_chat_timeout(std::time::Duration::from_millis(10))
-            .await
-            .is_some()
-        {
-            // Discard old messages
-        }
+        self.drain_chat_messages().await;
 
         // Send the time query command
-        self.bot
-            .send_command("time query gametime")
-            .await?;
+        self.bot.send_command("time query gametime").await?;
 
         // Wait for response: "The time is <number>"
-        let timeout = std::time::Duration::from_secs(5);
+        let timeout = std::time::Duration::from_secs(GAMETIME_QUERY_TIMEOUT_SECS);
         let start = std::time::Instant::now();
 
         while start.elapsed() < timeout {
             if let Some(message) = self
                 .bot
-                .recv_chat_timeout(std::time::Duration::from_millis(100))
+                .recv_chat_timeout(std::time::Duration::from_millis(CHAT_POLL_TIMEOUT_MS))
                 .await
             {
                 // Look for "The time is" message
@@ -236,11 +249,11 @@ impl TestExecutor {
         self.bot.send_command("tick step").await?;
 
         // Wait for the tick to actually complete by polling gametime
-        let timeout = std::time::Duration::from_secs(5);
+        let timeout = std::time::Duration::from_secs(TICK_STEP_TIMEOUT_SECS);
         let poll_start = std::time::Instant::now();
 
         loop {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(TICK_STEP_POLL_MS)).await;
             let after = self.query_gametime().await?;
 
             if after > before {
@@ -266,14 +279,7 @@ impl TestExecutor {
     /// NOTE: Accounts for Minecraft's off-by-one bug where "tick sprint N" executes N+1 ticks
     async fn sprint_ticks(&mut self, ticks: u32) -> Result<u64> {
         // Clear any pending chat messages
-        while self
-            .bot
-            .recv_chat_timeout(std::time::Duration::from_millis(10))
-            .await
-            .is_some()
-        {
-            // Discard old messages
-        }
+        self.drain_chat_messages().await;
 
         // Account for Minecraft's off-by-one bug: "tick sprint N" executes N+1 ticks
         // So to execute `ticks` ticks, we request ticks-1
@@ -286,13 +292,13 @@ impl TestExecutor {
 
         // Wait for the "Sprint completed" message
         // Server message format: "Sprint completed with X ticks per second, or Y ms per tick"
-        let timeout = std::time::Duration::from_secs(30);
+        let timeout = std::time::Duration::from_secs(SPRINT_TIMEOUT_SECS);
         let start = std::time::Instant::now();
 
         while start.elapsed() < timeout {
             if let Some(message) = self
                 .bot
-                .recv_chat_timeout(std::time::Duration::from_millis(100))
+                .recv_chat_timeout(std::time::Duration::from_millis(CHAT_POLL_TIMEOUT_MS))
                 .await
             {
                 // Look for "Sprint completed" message
@@ -301,24 +307,25 @@ impl TestExecutor {
                     // Format: "... or X ms per tick"
                     if let Some(ms_part) = message.split("or ").nth(1)
                         && let Some(ms_str) = ms_part.split(" ms per tick").next()
-                            && let Ok(ms) = ms_str.trim().parse::<f64>() {
-                                let ms_rounded = ms.ceil() as u64;
-                                println!(
-                                    "    {} Sprint {} ticks completed in {} ms per tick",
-                                    "⚡".dimmed(),
-                                    ticks,
-                                    ms_rounded
-                                );
-                                // Return total time: ms per tick * number of ticks
-                                return Ok(ms_rounded * ticks as u64);
-                            }
+                        && let Ok(ms) = ms_str.trim().parse::<f64>()
+                    {
+                        let ms_rounded = ms.ceil() as u64;
+                        println!(
+                            "    {} Sprint {} ticks completed in {} ms per tick",
+                            "⚡".dimmed(),
+                            ticks,
+                            ms_rounded
+                        );
+                        // Return total time: ms per tick * number of ticks
+                        return Ok(ms_rounded * ticks as u64);
+                    }
                     // If we found the message but couldn't parse, use default
                     println!(
                         "    {} Sprint {} ticks completed (timing not parsed)",
                         "⚡".dimmed(),
                         ticks
                     );
-                    return Ok(200);
+                    return Ok(MIN_RETRY_DELAY_MS);
                 }
             }
         }
@@ -329,7 +336,7 @@ impl TestExecutor {
             "⚡".dimmed(),
             ticks
         );
-        Ok(200)
+        Ok(MIN_RETRY_DELAY_MS)
     }
 
     pub async fn run_tests_parallel(
@@ -377,11 +384,11 @@ impl TestExecutor {
             );
             self.bot.send_command(&cmd).await?;
         }
-        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(CLEANUP_DELAY_MS)).await;
 
         // Freeze time globally
         self.bot.send_command("tick freeze").await?;
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(COMMAND_DELAY_MS)).await;
 
         // Break after setup if requested
         let mut stepping_mode = false;
@@ -452,12 +459,16 @@ impl TestExecutor {
                     let world_max = self.apply_offset(region[1], *offset);
                     let cmd = format!(
                         "fill {} {} {} {} {} {} air",
-                        world_min[0], world_min[1], world_min[2], world_max[0], world_max[1],
+                        world_min[0],
+                        world_min[1],
+                        world_min[2],
+                        world_max[0],
+                        world_max[1],
                         world_max[2]
                     );
                     self.bot.send_command(&cmd).await?;
                     tests_cleaned[test_idx] = true;
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(COMMAND_DELAY_MS)).await;
                 }
             }
 
@@ -478,7 +489,7 @@ impl TestExecutor {
                 if stepping_mode {
                     // In stepping mode, only advance one tick at a time
                     self.step_tick().await?;
-                    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(CLEANUP_DELAY_MS)).await;
                     current_tick += 1;
                 } else {
                     // In continue mode, sprint to next event or breakpoint
@@ -503,8 +514,8 @@ impl TestExecutor {
                         0
                     };
 
-                    // Use sprint timing for retry delay (ensure at least 200ms)
-                    let retry_delay = sprint_time_ms.max(200);
+                    // Use sprint timing for retry delay (ensure minimum)
+                    let retry_delay = sprint_time_ms.max(MIN_RETRY_DELAY_MS);
                     tokio::time::sleep(tokio::time::Duration::from_millis(retry_delay)).await;
 
                     current_tick += ticks_to_sprint;
@@ -531,12 +542,16 @@ impl TestExecutor {
                 let world_max = self.apply_offset(region[1], *offset);
                 let cmd = format!(
                     "fill {} {} {} {} {} {} air",
-                    world_min[0], world_min[1], world_min[2], world_max[0], world_max[1],
+                    world_min[0],
+                    world_min[1],
+                    world_min[2],
+                    world_max[0],
+                    world_max[1],
                     world_max[2]
                 );
                 self.bot.send_command(&cmd).await?;
                 tests_cleaned[test_idx] = true;
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                tokio::time::sleep(tokio::time::Duration::from_millis(COMMAND_DELAY_MS)).await;
             }
         }
 
@@ -585,18 +600,18 @@ impl TestExecutor {
             total_failed
         );
         self.bot.send_command(&format!("say {}", summary)).await?;
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(COMMAND_DELAY_MS)).await;
 
         // Send individual test results to chat
         for result in &results {
             let status = if result.success { "PASS" } else { "FAIL" };
             let msg = format!("say [{}] {}", status, result.test_name);
             self.bot.send_command(&msg).await?;
-            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            tokio::time::sleep(tokio::time::Duration::from_millis(TICK_STEP_POLL_MS)).await;
         }
 
         // Give messages time to be sent before potential disconnect
-        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(CLEANUP_DELAY_MS)).await;
 
         Ok(results)
     }
@@ -645,7 +660,8 @@ impl TestExecutor {
                         placement.pos[2],
                         placement.block.dimmed()
                     );
-                    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(PLACE_EACH_DELAY_MS))
+                        .await;
                 }
                 Ok(false)
             }
@@ -701,18 +717,11 @@ impl TestExecutor {
                 for check in checks {
                     let world_pos = self.apply_offset(check.pos, offset);
 
-                    // Poll with retries: 10 attempts, 50ms apart = up to 500ms total
-                    // This handles timing issues in CI environments
-                    let actual_block = self
-                        .poll_block_with_retry(world_pos, &check.is, 10, 50)
-                        .await?;
+                    // Poll with retries to handle timing issues in CI environments
+                    let actual_block = self.poll_block_with_retry(world_pos, &check.is).await?;
 
-                    let expected_name = check.is.trim_start_matches("minecraft:");
                     let success = if let Some(ref actual) = actual_block {
-                        let actual_lower = actual.to_lowercase();
-                        let expected_lower = expected_name.to_lowercase().replace("_", "");
-                        actual_lower.contains(&expected_lower)
-                            || actual_lower.replace("_", "").contains(&expected_lower)
+                        Self::block_matches(actual, &check.is)
                     } else {
                         false
                     };
@@ -745,11 +754,8 @@ impl TestExecutor {
                 let world_pos = self.apply_offset(*pos, offset);
                 let expected_value = &values[value_idx];
 
-                // Poll with retries: 10 attempts, 50ms apart = up to 500ms total
-                // This handles timing issues in CI environments
-                let actual_value = self
-                    .poll_block_state_with_retry(world_pos, state, 10, 50)
-                    .await?;
+                // Poll with retries to handle timing issues in CI environments
+                let actual_value = self.poll_block_state_with_retry(world_pos, state).await?;
 
                 let success = if let Some(ref actual) = actual_value {
                     actual.contains(expected_value)

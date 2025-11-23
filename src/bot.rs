@@ -5,6 +5,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
 
+// Constants for connection and timing
+const INIT_WAIT_ATTEMPTS: u32 = 50;
+const INIT_WAIT_DELAY_MS: u64 = 100;
+const GAME_STATE_WAIT_ATTEMPTS: u32 = 100;
+const WORLD_SYNC_DELAY_MS: u64 = 500;
+
 #[derive(Clone, Component)]
 struct State {
     client_handle: Arc<RwLock<Option<Client>>>,
@@ -32,6 +38,14 @@ pub struct TestBot {
 impl TestBot {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Get a reference to the client, or error if not connected
+    fn get_client(&self) -> Result<parking_lot::RwLockReadGuard<'_, Option<Client>>> {
+        self.client
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Bot not connected"))
+            .map(|handle| handle.read())
     }
 
     pub async fn connect(&mut self, server: &str) -> Result<()> {
@@ -87,8 +101,8 @@ impl TestBot {
         });
 
         // Wait for client to initialize
-        for _ in 0..50 {
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        for _ in 0..INIT_WAIT_ATTEMPTS {
+            tokio::time::sleep(tokio::time::Duration::from_millis(INIT_WAIT_DELAY_MS)).await;
             if client_handle.read().is_some() {
                 break;
             }
@@ -100,8 +114,8 @@ impl TestBot {
 
         // Wait for bot to be in game state
         tracing::info!("Waiting for bot to enter game state...");
-        for _ in 0..100 {
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        for _ in 0..GAME_STATE_WAIT_ATTEMPTS {
+            tokio::time::sleep(tokio::time::Duration::from_millis(INIT_WAIT_DELAY_MS)).await;
             if in_game.load(Ordering::SeqCst) {
                 break;
             }
@@ -117,7 +131,7 @@ impl TestBot {
         tracing::info!("Connected successfully and in game state");
 
         // Give a small amount of extra time for world data to sync
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(WORLD_SYNC_DELAY_MS)).await;
 
         Ok(())
     }
@@ -135,45 +149,39 @@ impl TestBot {
     }
 
     pub async fn send_command(&self, command: &str) -> Result<()> {
-        if let Some(client_handle) = &self.client {
-            if let Some(client) = client_handle.read().as_ref() {
-                // Add "/" prefix if not present
-                let command_with_slash = if command.starts_with('/') {
-                    command.to_string()
-                } else {
-                    format!("/{}", command)
-                };
-                tracing::debug!("Sending command: {}", command_with_slash);
-                client.chat(&command_with_slash);
-                Ok(())
-            } else {
-                anyhow::bail!("Bot not initialized")
-            }
+        let client_guard = self.get_client()?;
+        let client = client_guard
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Bot not initialized"))?;
+
+        // Add "/" prefix if not present
+        let command_with_slash = if command.starts_with('/') {
+            command.to_string()
         } else {
-            anyhow::bail!("Bot not connected")
-        }
+            format!("/{}", command)
+        };
+        tracing::debug!("Sending command: {}", command_with_slash);
+        client.chat(&command_with_slash);
+        Ok(())
     }
 
     pub async fn get_block(&self, pos: [i32; 3]) -> Result<Option<String>> {
-        if let Some(client_handle) = &self.client {
-            if let Some(client) = client_handle.read().as_ref() {
-                let block_pos = azalea::BlockPos::new(pos[0], pos[1], pos[2]);
-                let world_lock = client.world();
-                let world = world_lock.read();
-                let block_state = world.get_block_state(block_pos);
+        let client_guard = self.get_client()?;
+        let client = client_guard
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Bot not initialized"))?;
 
-                if let Some(state) = block_state {
-                    // Return block state as debug string
-                    let state_str = format!("{:?}", state);
-                    Ok(Some(state_str))
-                } else {
-                    Ok(None)
-                }
-            } else {
-                anyhow::bail!("Bot not initialized")
-            }
+        let block_pos = azalea::BlockPos::new(pos[0], pos[1], pos[2]);
+        let world_lock = client.world();
+        let world = world_lock.read();
+        let block_state = world.get_block_state(block_pos);
+
+        if let Some(state) = block_state {
+            // Return block state as debug string
+            let state_str = format!("{:?}", state);
+            Ok(Some(state_str))
         } else {
-            anyhow::bail!("Bot not connected")
+            Ok(None)
         }
     }
 
@@ -182,33 +190,30 @@ impl TestBot {
         pos: [i32; 3],
         property: &str,
     ) -> Result<Option<String>> {
-        if let Some(client_handle) = &self.client {
-            if let Some(client) = client_handle.read().as_ref() {
-                let block_pos = azalea::BlockPos::new(pos[0], pos[1], pos[2]);
-                let world_lock = client.world();
-                let world = world_lock.read();
-                let block_state = world.get_block_state(block_pos);
+        let client_guard = self.get_client()?;
+        let client = client_guard
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Bot not initialized"))?;
 
-                if let Some(state) = block_state {
-                    // For now, return the full state string representation
-                    // The property API has changed in newer versions
-                    let state_str = format!("{:?}", state);
+        let block_pos = azalea::BlockPos::new(pos[0], pos[1], pos[2]);
+        let world_lock = client.world();
+        let world = world_lock.read();
+        let block_state = world.get_block_state(block_pos);
 
-                    // Simple string matching for common properties
-                    if state_str.contains(&format!("{}: ", property)) {
-                        // Try to extract the value
-                        Ok(Some(state_str))
-                    } else {
-                        Ok(None)
-                    }
-                } else {
-                    Ok(None)
-                }
+        if let Some(state) = block_state {
+            // For now, return the full state string representation
+            // The property API has changed in newer versions
+            let state_str = format!("{:?}", state);
+
+            // Simple string matching for common properties
+            if state_str.contains(&format!("{}: ", property)) {
+                // Try to extract the value
+                Ok(Some(state_str))
             } else {
-                anyhow::bail!("Bot not initialized")
+                Ok(None)
             }
         } else {
-            anyhow::bail!("Bot not connected")
+            Ok(None)
         }
     }
 }

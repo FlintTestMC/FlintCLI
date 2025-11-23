@@ -5,10 +5,60 @@ use anyhow::Result;
 use clap::Parser;
 use colored::Colorize;
 use flint_core::loader::TestLoader;
+use flint_core::results::TestResult;
 use flint_core::spatial::calculate_test_offset_default;
 use flint_core::test_spec::TestSpec;
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
+
+// Constants
+const CHUNK_SIZE: usize = 100;
+const SEPARATOR_WIDTH: usize = 60;
+
+/// Print a separator line
+fn print_separator() {
+    println!("{}", "═".repeat(SEPARATOR_WIDTH).dimmed());
+}
+
+/// Print chunk header
+fn print_chunk_header(chunk_idx: usize, total_chunks: usize, chunk_len: usize) {
+    println!(
+        "{} {} Chunk {}/{} ({} tests in 10x10 grid)",
+        "═".repeat(SEPARATOR_WIDTH).dimmed(),
+        "→".blue().bold(),
+        chunk_idx + 1,
+        total_chunks,
+        chunk_len
+    );
+    print_separator();
+    println!();
+}
+
+/// Print test summary
+fn print_test_summary(results: &[TestResult]) {
+    println!("\n{}", "═".repeat(SEPARATOR_WIDTH).dimmed());
+    println!("{}", "Test Summary".cyan().bold());
+    print_separator();
+
+    let total_passed = results.iter().filter(|r| r.success).count();
+    let total_failed = results.len() - total_passed;
+
+    for result in results {
+        let status = if result.success {
+            "PASS".green().bold()
+        } else {
+            "FAIL".red().bold()
+        };
+        println!("  [{}] {}", status, result.test_name);
+    }
+
+    println!(
+        "\n{} tests run: {} passed, {} failed\n",
+        results.len(),
+        total_passed.to_string().green(),
+        total_failed.to_string().red()
+    );
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "flintmc")]
@@ -95,8 +145,7 @@ async fn main() -> Result<()> {
     executor.connect(&args.server).await?;
     println!("{} Connected successfully\n", "✓".green());
 
-    // Load all tests and run in chunks of 100 (10x10 grid)
-    const CHUNK_SIZE: usize = 100;
+    // Load all tests and run in chunks
     let total_tests = test_files.len();
     let chunks: Vec<_> = test_files.chunks(CHUNK_SIZE).collect();
     let total_chunks = chunks.len();
@@ -113,15 +162,7 @@ async fn main() -> Result<()> {
     let mut all_results = Vec::new();
 
     for (chunk_idx, chunk) in chunks.iter().enumerate() {
-        println!(
-            "{} {} Chunk {}/{} ({} tests in 10x10 grid)",
-            "═".repeat(60).dimmed(),
-            "→".blue().bold(),
-            chunk_idx + 1,
-            total_chunks,
-            chunk.len()
-        );
-        println!("{}\n", "═".repeat(60).dimmed());
+        print_chunk_header(chunk_idx, total_chunks, chunk.len());
 
         let mut tests_with_offsets = Vec::new();
         for (test_index, test_file) in chunk.iter().enumerate() {
@@ -171,34 +212,10 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Use aggregated results from all chunks
-    let results = all_results;
+    // Print summary using aggregated results from all chunks
+    print_test_summary(&all_results);
 
-    // Print summary
-    println!("\n{}", "═".repeat(60).dimmed());
-    println!("{}", "Test Summary".cyan().bold());
-    println!("{}", "═".repeat(60).dimmed());
-
-    let total_passed = results.iter().filter(|r| r.success).count();
-    let total_failed = results.len() - total_passed;
-
-    for result in &results {
-        let status = if result.success {
-            "PASS".green().bold()
-        } else {
-            "FAIL".red().bold()
-        };
-        println!("  [{}] {}", status, result.test_name);
-    }
-
-    println!(
-        "\n{} tests run: {} passed, {} failed\n",
-        results.len(),
-        total_passed.to_string().green(),
-        total_failed.to_string().red()
-    );
-
-    if total_failed > 0 {
+    if all_results.iter().any(|r| !r.success) {
         std::process::exit(1);
     }
 
