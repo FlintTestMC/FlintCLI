@@ -17,6 +17,7 @@ const PLACE_EACH_DELAY_MS: u64 = 10;
 const GAMETIME_QUERY_TIMEOUT_SECS: u64 = 5;
 const TICK_STEP_TIMEOUT_SECS: u64 = 5;
 const TICK_STEP_POLL_MS: u64 = 50;
+const TEST_RESULT_DELAY_MS: u64 = 50;
 const SPRINT_TIMEOUT_SECS: u64 = 30;
 const MIN_RETRY_DELAY_MS: u64 = 200;
 
@@ -607,7 +608,7 @@ impl TestExecutor {
             let status = if result.success { "PASS" } else { "FAIL" };
             let msg = format!("say [{}] {}", status, result.test_name);
             self.bot.send_command(&msg).await?;
-            tokio::time::sleep(tokio::time::Duration::from_millis(TICK_STEP_POLL_MS)).await;
+            tokio::time::sleep(tokio::time::Duration::from_millis(TEST_RESULT_DELAY_MS)).await;
         }
 
         // Give messages time to be sent before potential disconnect

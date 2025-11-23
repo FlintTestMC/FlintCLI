@@ -160,7 +160,10 @@ async fn main() -> Result<()> {
         total_chunks,
         CHUNK_SIZE
     );
-    println!("  Each chunk uses a {}x{} grid around spawn\n", GRID_SIZE, GRID_SIZE);
+    println!(
+        "  Each chunk uses a {}x{} grid around spawn\n",
+        GRID_SIZE, GRID_SIZE
+    );
 
     let mut all_results = Vec::new();
 
