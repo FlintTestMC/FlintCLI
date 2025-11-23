@@ -13,6 +13,7 @@ use tracing_subscriber::EnvFilter;
 
 // Constants
 const CHUNK_SIZE: usize = 100;
+const GRID_SIZE: usize = 10; // Tests are arranged in a 10x10 grid
 const SEPARATOR_WIDTH: usize = 60;
 
 /// Print a separator line
@@ -23,12 +24,14 @@ fn print_separator() {
 /// Print chunk header
 fn print_chunk_header(chunk_idx: usize, total_chunks: usize, chunk_len: usize) {
     println!(
-        "{} {} Chunk {}/{} ({} tests in 10x10 grid)",
+        "{} {} Chunk {}/{} ({} tests in {}x{} grid)",
         "═".repeat(SEPARATOR_WIDTH).dimmed(),
         "→".blue().bold(),
         chunk_idx + 1,
         total_chunks,
-        chunk_len
+        chunk_len,
+        GRID_SIZE,
+        GRID_SIZE
     );
     print_separator();
     println!();
@@ -157,7 +160,7 @@ async fn main() -> Result<()> {
         total_chunks,
         CHUNK_SIZE
     );
-    println!("  Each chunk uses a 10x10 grid around spawn\n");
+    println!("  Each chunk uses a {}x{} grid around spawn\n", GRID_SIZE, GRID_SIZE);
 
     let mut all_results = Vec::new();
 
