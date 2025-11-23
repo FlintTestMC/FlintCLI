@@ -95,42 +95,84 @@ async fn main() -> Result<()> {
     executor.connect(&args.server).await?;
     println!("{} Connected successfully\n", "✓".green());
 
-    // Load all tests and calculate offsets
+    // Load all tests and run in chunks of 100 (10x10 grid)
+    const CHUNK_SIZE: usize = 100;
     let total_tests = test_files.len();
-    let mut tests_with_offsets = Vec::new();
+    let chunks: Vec<_> = test_files.chunks(CHUNK_SIZE).collect();
+    let total_chunks = chunks.len();
 
-    for (test_index, test_file) in test_files.iter().enumerate() {
-        match TestSpec::from_file(test_file) {
-            Ok(test) => {
-                let offset = calculate_test_offset_default(test_index, total_tests);
-                println!(
-                    "  {} Grid position: {} (offset: [{}, {}, {}])",
-                    "→".blue(),
-                    format!("[{}/{}]", test_index + 1, total_tests).dimmed(),
-                    offset[0],
-                    offset[1],
-                    offset[2]
-                );
-                tests_with_offsets.push((test, offset));
+    println!(
+        "{} Running {} tests in {} chunk(s) of up to {}",
+        "→".blue().bold(),
+        total_tests,
+        total_chunks,
+        CHUNK_SIZE
+    );
+    println!("  Each chunk uses a 10x10 grid around spawn\n");
+
+    let mut all_results = Vec::new();
+
+    for (chunk_idx, chunk) in chunks.iter().enumerate() {
+        println!(
+            "{} {} Chunk {}/{} ({} tests in 10x10 grid)",
+            "═".repeat(60).dimmed(),
+            "→".blue().bold(),
+            chunk_idx + 1,
+            total_chunks,
+            chunk.len()
+        );
+        println!("{}\n", "═".repeat(60).dimmed());
+
+        let mut tests_with_offsets = Vec::new();
+        for (test_index, test_file) in chunk.iter().enumerate() {
+            match TestSpec::from_file(test_file) {
+                Ok(test) => {
+                    // Calculate offset within this chunk (10x10 grid)
+                    let offset = calculate_test_offset_default(test_index, chunk.len());
+                    println!(
+                        "  {} Grid position: {} (offset: [{}, {}, {}])",
+                        "→".blue(),
+                        format!("[{}/{}]", test_index + 1, chunk.len()).dimmed(),
+                        offset[0],
+                        offset[1],
+                        offset[2]
+                    );
+                    tests_with_offsets.push((test, offset));
+                }
+                Err(e) => {
+                    eprintln!(
+                        "{} Failed to load test {}: {}",
+                        "Error:".red().bold(),
+                        test_file.display(),
+                        e
+                    );
+                    std::process::exit(1);
+                }
             }
-            Err(e) => {
-                eprintln!(
-                    "{} Failed to load test {}: {}",
-                    "Error:".red().bold(),
-                    test_file.display(),
-                    e
-                );
-                std::process::exit(1);
-            }
+        }
+
+        println!();
+
+        // Run this chunk of tests in parallel using merged timeline
+        let chunk_results = executor
+            .run_tests_parallel(&tests_with_offsets, args.break_after_setup)
+            .await?;
+
+        all_results.extend(chunk_results);
+
+        if chunk_idx + 1 < total_chunks {
+            println!(
+                "\n{} Chunk {}/{} complete ({} tests). Moving to next chunk...\n",
+                "✓".green().bold(),
+                chunk_idx + 1,
+                total_chunks,
+                chunk.len()
+            );
         }
     }
 
-    println!();
-
-    // Run all tests in parallel using merged timeline
-    let results = executor
-        .run_tests_parallel(&tests_with_offsets, args.break_after_setup)
-        .await?;
+    // Use aggregated results from all chunks
+    let results = all_results;
 
     // Print summary
     println!("\n{}", "═".repeat(60).dimmed());
