@@ -4,7 +4,7 @@ A command-line interface for running [Flint](https://github.com/FlintTestMC/flin
 
 ## About Flint
 
-**Flint** is a Minecraft testing framework that consists of two main components:
+**Flint** is a Minecraft testing framework that consists of two main components (for now):
 
 - **[flint-core](https://github.com/FlintTestMC/flint-core)**: The core library containing test specifications, parsers, test loading, and spatial utilities. This is the foundation that can be integrated into various tools and environments.
 - **FlintCLI** (this project): A CLI tool that uses `flint-core` to run tests against live Minecraft servers via the Azalea bot framework.
