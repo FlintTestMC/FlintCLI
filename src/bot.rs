@@ -63,49 +63,41 @@ impl TestBot {
         let client_handle = state.client_handle.clone();
         let in_game = state.in_game.clone();
 
-        // Spawn the bot in a background thread with LocalSet (required by new azalea version)
+        // Spawn the bot in a background task
         let server_owned = server.to_string();
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("Failed to create tokio runtime");
-
-            let local = tokio::task::LocalSet::new();
-            local.block_on(&rt, async move {
-                async fn handler(bot: Client, event: Event, state: State) -> anyhow::Result<()> {
-                    match event {
-                        Event::Init => {
-                            *state.client_handle.write() = Some(bot.clone());
-                            tracing::info!("Bot initialized");
-                        }
-                        Event::Login => {
-                            // Login event means we're fully in the game state
-                            state.in_game.store(true, Ordering::SeqCst);
-                            tracing::info!("Bot in game state");
-                        }
-                        Event::Chat(m) => {
-                            // Extract the message content and send it through the channel
-                            let message = m.message().to_string();
-                            if let Some(ref tx) = state.chat_tx {
-                                let _ = tx.send(message);
-                            }
-                        }
-                        _ => {}
+        tokio::spawn(async move {
+            async fn handler(bot: Client, event: Event, state: State) -> anyhow::Result<()> {
+                match event {
+                    Event::Init => {
+                        *state.client_handle.write() = Some(bot.clone());
+                        tracing::info!("Bot initialized");
                     }
-                    Ok(())
+                    Event::Login => {
+                        // Login event means we're fully in the game state
+                        state.in_game.store(true, Ordering::SeqCst);
+                        tracing::info!("Bot in game state");
+                    }
+                    Event::Chat(m) => {
+                        // Extract the message content and send it through the channel
+                        let message = m.message().to_string();
+                        if let Some(ref tx) = state.chat_tx {
+                            let _ = tx.send(message);
+                        }
+                    }
+                    _ => {}
                 }
+                Ok(())
+            }
 
-                let result = ClientBuilder::new()
-                    .set_handler(handler)
-                    .set_state(state)
-                    .start(account, server_owned.as_str())
-                    .await;
+            let result = ClientBuilder::new()
+                .set_handler(handler)
+                .set_state(state)
+                .start(account, server_owned.as_str())
+                .await;
 
-                if let AppExit::Error(e) = result {
-                    tracing::error!("Bot connection error: {}", e);
-                }
-            });
+            if let Err(e) = result {
+                tracing::error!("Bot connection error: {}", e);
+            }
         });
 
         // Wait for client to initialize
