@@ -603,15 +603,16 @@ impl TestExecutor {
         &mut self,
         tick: u32,
         entry: &TimelineEntry,
-        value_idx: usize,
+        _value_idx: usize,
         offset: [i32; 3],
     ) -> Result<bool> {
         match &entry.action_type {
             ActionType::Place { pos, block } => {
                 let world_pos = self.apply_offset(*pos, offset);
+                let block_spec = block.to_command();
                 let cmd = format!(
                     "setblock {} {} {} {}",
-                    world_pos[0], world_pos[1], world_pos[2], block.id
+                    world_pos[0], world_pos[1], world_pos[2], block_spec
                 );
                 self.bot.send_command(&cmd).await?;
                 println!(
@@ -621,7 +622,7 @@ impl TestExecutor {
                     pos[0],
                     pos[1],
                     pos[2],
-                    block.id.dimmed()
+                    block_spec.dimmed()
                 );
                 Ok(false)
             }
@@ -629,9 +630,10 @@ impl TestExecutor {
             ActionType::PlaceEach { blocks } => {
                 for placement in blocks {
                     let world_pos = self.apply_offset(placement.pos, offset);
+                    let block_spec = placement.block.to_command();
                     let cmd = format!(
                         "setblock {} {} {} {}",
-                        world_pos[0], world_pos[1], world_pos[2], placement.block.id
+                        world_pos[0], world_pos[1], world_pos[2], block_spec
                     );
                     self.bot.send_command(&cmd).await?;
                     println!(
@@ -641,7 +643,7 @@ impl TestExecutor {
                         placement.pos[0],
                         placement.pos[1],
                         placement.pos[2],
-                        placement.block.id.dimmed()
+                        block_spec.dimmed()
                     );
                     tokio::time::sleep(tokio::time::Duration::from_millis(PLACE_EACH_DELAY_MS))
                         .await;
@@ -652,6 +654,7 @@ impl TestExecutor {
             ActionType::Fill { region, with } => {
                 let world_min = self.apply_offset(region[0], offset);
                 let world_max = self.apply_offset(region[1], offset);
+                let block_spec = with.to_command();
                 let cmd = format!(
                     "fill {} {} {} {} {} {} {}",
                     world_min[0],
@@ -660,7 +663,7 @@ impl TestExecutor {
                     world_max[0],
                     world_max[1],
                     world_max[2],
-                    with.id
+                    block_spec
                 );
                 self.bot.send_command(&cmd).await?;
                 println!(
@@ -673,7 +676,7 @@ impl TestExecutor {
                     region[1][0],
                     region[1][1],
                     region[1][2],
-                    with.id.dimmed()
+                    block_spec.dimmed()
                 );
                 Ok(false)
             }
