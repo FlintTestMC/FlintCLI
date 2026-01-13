@@ -25,15 +25,8 @@
             "at": 3,
             "do": "assert",
             "checks": [
-                {"pos": [7, 101, 7], "is": {"id": "minecraft:water"}}
+                {"pos": [7, 101, 7], "is": {"id": "minecraft:water", "level": "0"}}
             ]
-        },
-        {
-            "at": 3,
-            "do": "assert_state",
-            "pos": [7, 101, 7],
-            "state": "level",
-            "values": ["0"]
         }
     ]
 }

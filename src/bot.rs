@@ -184,36 +184,4 @@ impl TestBot {
             Ok(None)
         }
     }
-
-    pub async fn get_block_state_property(
-        &self,
-        pos: [i32; 3],
-        property: &str,
-    ) -> Result<Option<String>> {
-        let client_guard = self.get_client()?;
-        let client = client_guard
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Bot not initialized"))?;
-
-        let block_pos = azalea::BlockPos::new(pos[0], pos[1], pos[2]);
-        let world_lock = client.world();
-        let world = world_lock.read();
-        let block_state = world.get_block_state(block_pos);
-
-        if let Some(state) = block_state {
-            // For now, return the full state string representation
-            // The property API has changed in newer versions
-            let state_str = format!("{:?}", state);
-
-            // Simple string matching for common properties
-            if state_str.contains(&format!("{}: ", property)) {
-                // Try to extract the value
-                Ok(Some(state_str))
-            } else {
-                Ok(None)
-            }
-        } else {
-            Ok(None)
-        }
-    }
 }

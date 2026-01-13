@@ -19,22 +19,8 @@
             "at": 1,
             "do": "assert",
             "checks": [
-                {"pos": [0, 100, 0], "is": {"id": "minecraft:oak_fence"}}
+                {"pos": [0, 100, 0], "is": {"id": "minecraft:oak_fence", "east": "false", "west": "false"}}
             ]
-        },
-        {
-            "at": 1,
-            "do": "assert_state",
-            "pos": [0, 100, 0],
-            "state": "east",
-            "values": ["false"]
-        },
-        {
-            "at": 1,
-            "do": "assert_state",
-            "pos": [0, 100, 0],
-            "state": "west",
-            "values": ["false"]
         },
         {
             "at": 2,
@@ -44,10 +30,10 @@
         },
         {
             "at": 4,
-            "do": "assert_state",
-            "pos": [0, 100, 0],
-            "state": "east",
-            "values": ["true"]
+            "do": "assert",
+            "checks": [
+                {"pos": [0, 100, 0], "is": {"id": "minecraft:oak_fence", "east": "true"}}
+            ]
         }
     ]
 }

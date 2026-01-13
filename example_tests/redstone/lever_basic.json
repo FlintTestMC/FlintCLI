@@ -1,6 +1,6 @@
 {
-    "name": "lever_powers_adjacent_block",
-    "description": "Verify that a lever can be placed and powers an adjacent block when activated",
+    "name": "lever_basic",
+    "description": "Verify that a lever can be placed and detected with correct initial state",
     "tags": ["redstone"],
     "dependencies": ["basic_block_placement"],
     "setup": {
@@ -25,15 +25,8 @@
             "at": 2,
             "do": "assert",
             "checks": [
-                {"pos": [10, 101, 10], "is": {"id": "minecraft:lever"}}
+                {"pos": [10, 101, 10], "is": {"id": "minecraft:lever", "powered": "false"}}
             ]
-        },
-        {
-            "at": 2,
-            "do": "assert_state",
-            "pos": [10, 101, 10],
-            "state": "powered",
-            "values": ["false"]
         },
         {
             "at": 3,
@@ -43,10 +36,10 @@
         },
         {
             "at": 5,
-            "do": "assert_state",
-            "pos": [10, 101, 10],
-            "state": "powered",
-            "values": ["true"]
+            "do": "assert",
+            "checks": [
+                {"pos": [10, 101, 10], "is": {"id": "minecraft:lever", "powered": "true"}}
+            ]
         }
     ]
 }

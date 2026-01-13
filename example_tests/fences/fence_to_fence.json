@@ -23,17 +23,11 @@
         },
         {
             "at": 3,
-            "do": "assert_state",
-            "pos": [5, 100, 5],
-            "state": "east",
-            "values": ["true"]
-        },
-        {
-            "at": 3,
-            "do": "assert_state",
-            "pos": [6, 100, 5],
-            "state": "west",
-            "values": ["true"]
+            "do": "assert",
+            "checks": [
+                {"pos": [5, 100, 5], "is": {"id": "minecraft:oak_fence", "east": "true"}},
+                {"pos": [6, 100, 5], "is": {"id": "minecraft:oak_fence", "west": "true"}}
+            ]
         }
     ]
 }
