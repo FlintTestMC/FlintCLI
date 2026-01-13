@@ -1333,7 +1333,7 @@ dependencies = [
 [[package]]
 name = "flint-core"
 version = "0.1.0"
-source = "git+https://github.com/FlintTestMC/flint-core?rev=b2e776a#b2e776a4c638ab28bf1a04049e7fe9a7381ae04c"
+source = "git+https://github.com/FlintTestMC/flint-core?rev=3bef5a6#3bef5a6921873aee91ba5d20b20392eb2fe084d5"
 dependencies = [
  "anyhow",
  "serde",

@@ -629,7 +629,7 @@ impl TestExecutor {
                 let world_pos = self.apply_offset(*pos, offset);
                 let cmd = format!(
                     "setblock {} {} {} {}",
-                    world_pos[0], world_pos[1], world_pos[2], block
+                    world_pos[0], world_pos[1], world_pos[2], block.id
                 );
                 self.bot.send_command(&cmd).await?;
                 println!(
@@ -639,7 +639,7 @@ impl TestExecutor {
                     pos[0],
                     pos[1],
                     pos[2],
-                    block.dimmed()
+                    block.id.dimmed()
                 );
                 Ok(false)
             }
@@ -649,7 +649,7 @@ impl TestExecutor {
                     let world_pos = self.apply_offset(placement.pos, offset);
                     let cmd = format!(
                         "setblock {} {} {} {}",
-                        world_pos[0], world_pos[1], world_pos[2], placement.block
+                        world_pos[0], world_pos[1], world_pos[2], placement.block.id
                     );
                     self.bot.send_command(&cmd).await?;
                     println!(
@@ -659,7 +659,7 @@ impl TestExecutor {
                         placement.pos[0],
                         placement.pos[1],
                         placement.pos[2],
-                        placement.block.dimmed()
+                        placement.block.id.dimmed()
                     );
                     tokio::time::sleep(tokio::time::Duration::from_millis(PLACE_EACH_DELAY_MS))
                         .await;
@@ -678,7 +678,7 @@ impl TestExecutor {
                     world_max[0],
                     world_max[1],
                     world_max[2],
-                    with
+                    with.id
                 );
                 self.bot.send_command(&cmd).await?;
                 println!(
@@ -691,7 +691,7 @@ impl TestExecutor {
                     region[1][0],
                     region[1][1],
                     region[1][2],
-                    with.dimmed()
+                    with.id.dimmed()
                 );
                 Ok(false)
             }

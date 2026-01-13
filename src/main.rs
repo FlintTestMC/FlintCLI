@@ -8,6 +8,7 @@ use flint_core::loader::TestLoader;
 use flint_core::results::TestResult;
 use flint_core::spatial::calculate_test_offset_default;
 use flint_core::test_spec::TestSpec;
+use std::path::Path;
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 
@@ -106,18 +107,19 @@ async fn main() -> Result<()> {
     println!("{}", "FlintMC - Minecraft Testing Framework".green().bold());
     println!();
 
-    // Collect test files - use tags if provided, otherwise use path
+    let test_loader = if let Some(ref path) = args.path {
+        println!("{} Loading tests from {}...", "→".blue(), path.display());
+        TestLoader::new(path, args.recursive)
+    } else {
+        TestLoader::new(Path::new("."), true)
+    }?;
+
+    // Collect test files - use tags if provided, otherwise collect all
     let test_files = if !args.tags.is_empty() {
         println!("{} Filtering by tags: {:?}", "→".blue(), args.tags);
-        TestLoader::collect_by_tags(&args.tags)?
-    } else if let Some(ref path) = args.path {
-        TestLoader::collect_test_files(path, args.recursive)?
+        test_loader.collect_by_tags(&args.tags)?
     } else {
-        eprintln!(
-            "{} Must specify either a path or tags to filter by",
-            "Error:".red().bold()
-        );
-        std::process::exit(1);
+        test_loader.collect_all_test_files()?
     };
 
     if test_files.is_empty() {
