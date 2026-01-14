@@ -24,6 +24,7 @@ const MIN_RETRY_DELAY_MS: u64 = 200;
 pub struct TestExecutor {
     bot: TestBot,
     use_chat_control: bool,
+    action_delay_ms: u64,
 }
 
 impl Default for TestExecutor {
@@ -31,6 +32,7 @@ impl Default for TestExecutor {
         Self {
             bot: TestBot::new(),
             use_chat_control: false,
+            action_delay_ms: COMMAND_DELAY_MS,
         }
     }
 }
@@ -42,6 +44,10 @@ impl TestExecutor {
 
     pub fn set_chat_control(&mut self, enabled: bool) {
         self.use_chat_control = enabled;
+    }
+
+    pub fn set_action_delay(&mut self, delay_ms: u64) {
+        self.action_delay_ms = delay_ms;
     }
 
     fn apply_offset(&self, pos: [i32; 3], offset: [i32; 3]) -> [i32; 3] {
@@ -624,6 +630,7 @@ impl TestExecutor {
                     pos[2],
                     block_spec.dimmed()
                 );
+                tokio::time::sleep(tokio::time::Duration::from_millis(self.action_delay_ms)).await;
                 Ok(false)
             }
 
@@ -678,6 +685,7 @@ impl TestExecutor {
                     region[1][2],
                     block_spec.dimmed()
                 );
+                tokio::time::sleep(tokio::time::Duration::from_millis(self.action_delay_ms)).await;
                 Ok(false)
             }
 
@@ -696,6 +704,7 @@ impl TestExecutor {
                     pos[1],
                     pos[2]
                 );
+                tokio::time::sleep(tokio::time::Duration::from_millis(self.action_delay_ms)).await;
                 Ok(false)
             }
 
