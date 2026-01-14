@@ -112,8 +112,10 @@ async fn main() -> Result<()> {
         TestLoader::new(path, args.recursive)
             .with_context(|| format!("Failed to initialize test loader for path: {}", path.display()))?
     } else {
-        TestLoader::new(Path::new("."), true)
-    }?;
+        let default_path = Path::new(".");
+        TestLoader::new(default_path, true)
+            .with_context(|| format!("Failed to initialize test loader for default path: {}", default_path.display()))?
+    };
 
     // Collect test files - use tags if provided, otherwise collect all
     let test_files = if !args.tags.is_empty() {
