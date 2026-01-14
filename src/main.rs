@@ -110,6 +110,7 @@ async fn main() -> Result<()> {
     let test_loader = if let Some(ref path) = args.path {
         println!("{} Loading tests from {}...", "→".blue(), path.display());
         TestLoader::new(path, args.recursive)
+            .with_context(|| format!("Failed to initialize test loader for path: {}", path.display()))?
     } else {
         TestLoader::new(Path::new("."), true)
     }?;
@@ -117,9 +118,11 @@ async fn main() -> Result<()> {
     // Collect test files - use tags if provided, otherwise collect all
     let test_files = if !args.tags.is_empty() {
         println!("{} Filtering by tags: {:?}", "→".blue(), args.tags);
-        test_loader.collect_by_tags(&args.tags)?
+        test_loader.collect_by_tags(&args.tags)
+            .with_context(|| format!("Failed to collect tests by tags: {:?}", args.tags))?
     } else {
-        test_loader.collect_all_test_files()?
+        test_loader.collect_all_test_files()
+            .context("Failed to collect test files")?
     };
 
     if test_files.is_empty() {
