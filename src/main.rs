@@ -111,8 +111,10 @@ async fn main() -> Result<()> {
         println!("{} Loading tests from {}...", "→".blue(), path.display());
         TestLoader::new(path, args.recursive)
     } else {
-        TestLoader::new(Path::new("."), true)
-    }?;
+        let default_path = Path::new("FlintBenchmark/tests");
+        TestLoader::new(default_path, true)
+            .with_context(|| format!("Failed to initialize test loader for default path: {}", default_path.display()))?
+    };
 
     // Collect test files - use tags if provided, otherwise collect all
     let test_files = if !args.tags.is_empty() {
