@@ -42,7 +42,7 @@ jobs:
         mkdir -p minecraft-server
         cd minecraft-server
         # Download Paper MC 1.21.9 (latest compatible version)
-        wget -O server.jar https://fill-data.papermc.io/v1/objects/aec002e77c7566e49494fdf05430b96078ffd1d7430e652d4f338fef951e7a10/paper-1.21.9-59.jar
+        wget -O server.jar https://meta.fabricmc.net/v2/versions/loader/1.21.11/0.18.4/1.1.1/server/jar
         echo "eula=true" > eula.txt
 
     - name: Configure Minecraft Server
