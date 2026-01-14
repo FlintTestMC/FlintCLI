@@ -1,7 +1,7 @@
 mod bot;
 mod executor;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use colored::Colorize;
 use flint_core::loader::TestLoader;
