@@ -91,6 +91,10 @@ struct Args {
     /// Filter tests by tags (can be specified multiple times)
     #[arg(short = 't', long = "tag")]
     tags: Vec<String>,
+
+    /// Delay in milliseconds between each action (default: 100)
+    #[arg(short = 'd', long = "action-delay", default_value = "100")]
+    action_delay: u64,
 }
 
 #[tokio::main]
@@ -141,6 +145,16 @@ async fn main() -> Result<()> {
 
     // Connect to server
     let mut executor = executor::TestExecutor::new();
+
+    // Set action delay
+    executor.set_action_delay(args.action_delay);
+    if args.action_delay != 100 {
+        println!(
+            "{} Action delay set to {} ms",
+            "→".yellow(),
+            args.action_delay
+        );
+    }
 
     // Enable chat control if requested
     if args.chat_control {
