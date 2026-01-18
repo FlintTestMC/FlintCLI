@@ -134,8 +134,10 @@ async fn main() -> Result<()> {
     if test_files.is_empty() {
         let location = if !args.tags.is_empty() {
             format!("with tags: {:?}", args.tags)
+        } else if let Some(ref path) = args.path {
+            format!("at: {}", path.display())
         } else {
-            format!("at: {}", args.path.as_ref().unwrap().display())
+            "at default path: FlintBenchmark/tests".to_string()
         };
         eprintln!("{} No test files found {}", "Error:".red().bold(), location);
         std::process::exit(1);
