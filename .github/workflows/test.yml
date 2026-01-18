@@ -151,8 +151,8 @@ jobs:
         sleep 2
 
         # Op the bot player by writing directly to the pipe
-        echo "op FlintMC_TestBot" > server_input
-        echo "Sent op command for FlintMC_TestBot"
+        echo "op flintmc_testbot" > server_input
+        echo "Sent op command for flintmc_testbot"
         sleep 2
         
         # Ensure carpet rules are set (in case carpet.conf wasn't loaded)

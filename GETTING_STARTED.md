@@ -13,7 +13,7 @@ FlintMC is now ready to use! Here's how to get started.
 2. **Minecraft Server** (1.21.8+):
    - You need a running Minecraft server
    - The bot needs **operator permissions** to run commands and avoid spam kicks
-   - Give the bot op: `/op FlintMC_TestBot`
+   - Give the bot op: `/op flintmc_testbot`
    - **Important**: Without op permissions, the bot will be kicked for spamming when running multiple tests
 
 ## Building
@@ -79,7 +79,7 @@ cargo run -- my_test.json --server localhost:25565
 
 ## How It Works
 
-1. Bot connects to server as `FlintMC_TestBot`
+1. Bot connects to server as `flintmc_testbot`
 2. Time is frozen with `/tick freeze`
 3. Actions are executed at their specified tick
 4. Between ticks, `/tick step 1` advances time
@@ -95,7 +95,7 @@ cargo run -- my_test.json --server localhost:25565
 - Ensure the bot can connect (check server whitelist/firewall)
 
 ### "Bot needs op permissions"
-- Run `/op FlintMC_TestBot` on your server
+- Run `/op flintmc_testbot` on your server
 - The bot needs op to execute `/setblock`, `/fill`, and `/tick` commands
 
 ### Assertion failures

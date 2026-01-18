@@ -49,7 +49,7 @@ impl TestBot {
     }
 
     pub async fn connect(&mut self, server: &str) -> Result<()> {
-        let account = Account::offline("FlintMC_TestBot");
+        let account = Account::offline("flintmc_testbot");
 
         tracing::info!("Connecting to server: {}", server);
 
