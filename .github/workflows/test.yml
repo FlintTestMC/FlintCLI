@@ -41,37 +41,94 @@ jobs:
       run: |
         mkdir -p minecraft-server
         cd minecraft-server
-        # Download Paper MC 1.21.9 (latest compatible version)
+        # Download Fabric 1.21.11 (latest compatible version)
         wget -O server.jar https://meta.fabricmc.net/v2/versions/loader/1.21.11/0.18.4/1.1.1/server/jar
         echo "eula=true" > eula.txt
+        
+        # Download carpet mods
+        mkdir -p mods
+        wget -O mods/fabric-carpet.jar "https://cdn.modrinth.com/data/TQTTVgYE/versions/HzPcczDK/fabric-carpet-1.21.11-1.4.194%2Bv251223.jar"
+        wget -O mods/carpet-tis-addition.jar "https://cdn.modrinth.com/data/jE0SjGuf/versions/BpAKF34C/carpet-tis-addition-v1.74.3-mc1.21.11.jar"
+        
+        # Configure carpet rules to disable anticheat and spam protection
+        mkdir -p world/carpet
+        cat > world/carpet.conf <<EOF
+        antiCheatDisabled true
+        antiSpamDisabled true
+        EOF
 
     - name: Configure Minecraft Server
       run: |
         cd minecraft-server
         cat > server.properties << EOF
-        enable-command-block=true
+        #Minecraft server properties
+        accepts-transfers=false
+        allow-flight=false
+        broadcast-console-to-ops=true
+        broadcast-rcon-to-ops=true
+        bug-report-link=
+        difficulty=easy
+        enable-code-of-conduct=false
+        enable-jmx-monitoring=false
+        enable-query=false
+        enable-rcon=false
+        enable-status=true
+        enforce-secure-profile=true
+        enforce-whitelist=false
+        entity-broadcast-range-percentage=100
+        force-gamemode=false
+        function-permission-level=2
         gamemode=creative
-        difficulty=peaceful
-        spawn-protection=0
-        max-players=10
+        generate-structures=false
+        generator-settings={}
+        hardcore=false
+        hide-online-players=false
+        initial-disabled-packs=
+        initial-enabled-packs=vanilla
+        level-name=world
+        level-seed=
+        level-type=minecraft\:flat
+        log-ips=true
+        management-server-allowed-origins=
+        management-server-enabled=false
+        management-server-host=localhost
+        management-server-port=0
+        management-server-secret=PYFrHIuydP0VRu32cc3Zb3LsiEsuYGWfRsOGASJQ
+        management-server-tls-enabled=true
+        management-server-tls-keystore=
+        management-server-tls-keystore-password=
+        max-chained-neighbor-updates=1000000
+        max-players=20
+        max-tick-time=60000
+        max-world-size=29999984
+        motd=A Minecraft Server
+        network-compression-threshold=256
         online-mode=false
-        pvp=false
+        op-permission-level=4
+        pause-when-empty-seconds=60
+        player-idle-timeout=0
+        prevent-proxy-connections=false
+        query.port=25565
+        rate-limit=0
+        rcon.password=
+        rcon.port=25575
+        region-file-compression=deflate
+        require-resource-pack=false
+        resource-pack=
+        resource-pack-id=
+        resource-pack-prompt=
+        resource-pack-sha1=
+        server-ip=
         server-port=25565
-        view-distance=10
         simulation-distance=10
-        level-type=flat
-        generator-settings={"layers":[{"block":"minecraft:bedrock","height":1},{"block":"minecraft:stone","height":2},{"block":"minecraft:grass_block","height":1}],"biome":"minecraft:plains"}
-        spawn-monsters=false
-        spawn-animals=false
-        spawn-npcs=false
-        EOF
-
-        # Create spigot.yml to disable spam filter completely
-        # This prevents "disconnect.spam" kicks when running multiple commands rapidly
-        cat > spigot.yml << EOF
-        commands:
-          spam-exclusions:
-            - "/"
+        spawn-protection=16
+        status-heartbeat-interval=0
+        sync-chunk-writes=true
+        text-filtering-config=
+        text-filtering-version=0
+        use-native-transport=true
+        view-distance=10
+        white-list=false
         EOF
 
     - name: Start Minecraft Server
@@ -97,6 +154,11 @@ jobs:
         echo "op FlintMC_TestBot" > server_input
         echo "Sent op command for FlintMC_TestBot"
         sleep 2
+        
+        # Ensure carpet rules are set (in case carpet.conf wasn't loaded)
+        echo "carpet antiCheatDisabled true" > server_input
+        echo "carpet antiSpamDisabled true" > server_input
+        sleep 1
 
     - name: Build FlintMC
       run: cargo build --release
