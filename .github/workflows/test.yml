@@ -47,8 +47,8 @@ jobs:
         
         # Download carpet mods
         mkdir -p mods
-        wget -O mods/fabric-carpet.jar "https://cdn.modrinth.com/data/TQTTVgYE/versions/HzPcczDK/fabric-carpet-1.21.11-1.4.194%2Bv251223.jar"
-        wget -O mods/carpet-tis-addition.jar "https://cdn.modrinth.com/data/jE0SjGuf/versions/BpAKF34C/carpet-tis-addition-v1.74.3-mc1.21.11.jar"
+        # wget -O mods/fabric-carpet.jar "https://cdn.modrinth.com/data/TQTTVgYE/versions/HzPcczDK/fabric-carpet-1.21.11-1.4.194%2Bv251223.jar"
+        # wget -O mods/carpet-tis-addition.jar "https://cdn.modrinth.com/data/jE0SjGuf/versions/BpAKF34C/carpet-tis-addition-v1.74.3-mc1.21.11.jar"
         
         # Configure carpet rules to disable anticheat and spam protection
         mkdir -p world/carpet
@@ -156,8 +156,8 @@ jobs:
         sleep 2
         
         # Ensure carpet rules are set (in case carpet.conf wasn't loaded)
-        echo "carpet antiCheatDisabled true" > server_input
-        echo "carpet antiSpamDisabled true" > server_input
+        # echo "carpet antiCheatDisabled true" > server_input
+        # echo "carpet antiSpamDisabled true" > server_input
         sleep 1
 
     - name: Build FlintMC
