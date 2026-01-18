@@ -178,7 +178,7 @@ jobs:
         pkill -f "java.*server.jar" || true
 
     - name: Upload Server Logs
-      if: failure()
+      if: always()
       uses: actions/upload-artifact@v4
       with:
         name: minecraft-server-logs
