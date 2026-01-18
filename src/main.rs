@@ -112,7 +112,7 @@ async fn main() -> Result<()> {
         TestLoader::new(path, args.recursive)
             .with_context(|| format!("Failed to initialize test loader for path: {}", path.display()))?
     } else {
-        let default_path = Path::new(".");
+        let default_path = Path::new("FlintBenchmark/tests");
         TestLoader::new(default_path, true)
             .with_context(|| format!("Failed to initialize test loader for default path: {}", default_path.display()))?
     };
