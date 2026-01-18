@@ -44,18 +44,6 @@ jobs:
         # Download Fabric 1.21.11 (latest compatible version)
         wget -O server.jar https://meta.fabricmc.net/v2/versions/loader/1.21.11/0.18.4/1.1.1/server/jar
         echo "eula=true" > eula.txt
-        
-        # Download carpet mods
-        mkdir -p mods
-        # wget -O mods/fabric-carpet.jar "https://cdn.modrinth.com/data/TQTTVgYE/versions/HzPcczDK/fabric-carpet-1.21.11-1.4.194%2Bv251223.jar"
-        # wget -O mods/carpet-tis-addition.jar "https://cdn.modrinth.com/data/jE0SjGuf/versions/BpAKF34C/carpet-tis-addition-v1.74.3-mc1.21.11.jar"
-        
-        # Configure carpet rules to disable anticheat and spam protection
-        mkdir -p world/carpet
-        cat > world/carpet.conf <<EOF
-        antiCheatDisabled true
-        antiSpamDisabled true
-        EOF
 
     - name: Configure Minecraft Server
       run: |
@@ -154,11 +142,6 @@ jobs:
         echo "op flintmc_testbot" > server_input
         echo "Sent op command for flintmc_testbot"
         sleep 2
-        
-        # Ensure carpet rules are set (in case carpet.conf wasn't loaded)
-        # echo "carpet antiCheatDisabled true" > server_input
-        # echo "carpet antiSpamDisabled true" > server_input
-        sleep 1
 
     - name: Build FlintMC
       run: cargo build --release
