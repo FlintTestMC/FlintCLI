@@ -1,0 +1,3 @@
+[submodule "FlintBenchmark"]
+	path = FlintBenchmark
+	url = https://github.com/FlintTestMC/FlintBenchmark

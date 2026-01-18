@@ -1,54 +1,39 @@
 {
-  "flintVersion": "0.1",
-  "name": "fence_connects_to_block",
-  "description": "Verify that an oak fence connects to a solid block placed adjacent to it",
-  "tags": ["fences"],
-  "dependencies": ["basic_block_placement"],
-  "setup": {
-    "cleanup": {
-      "region": [[-5, 95, -5], [5, 105, 5]]
-    }
-  },
-  "timeline": [
-    {
-      "at": 0,
-      "do": "place",
-      "pos": [0, 100, 0],
-      "block": "minecraft:oak_fence"
+    "name": "fence_connects_to_block",
+    "description": "Verify that an oak fence connects to a solid block placed adjacent to it",
+    "tags": ["fences"],
+    "dependencies": ["basic_block_placement"],
+    "setup": {
+        "cleanup": {
+            "region": [[-5, 95, -5], [5, 105, 5]]
+        }
     },
-    {
-      "at": 1,
-      "do": "assert",
-      "checks": [
-        {"pos": [0, 100, 0], "is": "minecraft:oak_fence"}
-      ]
-    },
-    {
-      "at": 1,
-      "do": "assert_state",
-      "pos": [0, 100, 0],
-      "state": "east",
-      "values": ["false"]
-    },
-    {
-      "at": 1,
-      "do": "assert_state",
-      "pos": [0, 100, 0],
-      "state": "west",
-      "values": ["false"]
-    },
-    {
-      "at": 2,
-      "do": "place",
-      "pos": [1, 100, 0],
-      "block": "minecraft:stone"
-    },
-    {
-      "at": 4,
-      "do": "assert_state",
-      "pos": [0, 100, 0],
-      "state": "east",
-      "values": ["true"]
-    }
-  ]
+    "timeline": [
+        {
+            "at": 0,
+            "do": "place",
+            "pos": [0, 100, 0],
+            "block": {"id": "minecraft:oak_fence"}
+        },
+        {
+            "at": 1,
+            "do": "assert",
+            "checks": [
+                {"pos": [0, 100, 0], "is": {"id": "minecraft:oak_fence", "east": "false", "west": "false"}}
+            ]
+        },
+        {
+            "at": 2,
+            "do": "place",
+            "pos": [1, 100, 0],
+            "block": {"id": "minecraft:stone"}
+        },
+        {
+            "at": 4,
+            "do": "assert",
+            "checks": [
+                {"pos": [0, 100, 0], "is": {"id": "minecraft:oak_fence", "east": "true"}}
+            ]
+        }
+    ]
 }

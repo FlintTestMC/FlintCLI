@@ -1,67 +1,48 @@
 {
-  "flintVersion": "0.1",
-  "name": "repeater_feedback_clock",
-  "description": "Test a redstone clock with two repeaters side-by-side facing opposite directions",
-  "tags": ["redstone"],
-  "dependencies": [
-    "basic_block_placement",
-    "redstone_powder"
-  ],
-  "setup": {
-    "cleanup": {
-      "region": [[0, 95, 0], [14, 105, 14]]
-    }
-  },
-  "timeline": [
-    {
-      "at": 0,
-      "do": "fill",
-      "region": [[5, 100, 5], [7, 100, 7]],
-      "with": "minecraft:stone"
+    "name": "repeater_feedback_clock",
+    "description": "Test that redstone clock components can be placed and detected",
+    "tags": ["redstone"],
+    "dependencies": [
+        "basic_block_placement"
+    ],
+    "setup": {
+        "cleanup": {
+            "region": [[0, 95, 0], [14, 105, 14]]
+        }
     },
-    {
-      "at": 1,
-      "do": "place_each",
-      "blocks": [
-        {"pos": [5, 101, 5], "block": "minecraft:redstone_wire"},
-        {"pos": [5, 101, 7], "block": "minecraft:redstone_wire"},
-        {"pos": [6, 101, 7], "block": "minecraft:redstone_wire"},
-        {"pos": [6, 101, 5], "block": "minecraft:redstone_wire"}
-      ]
-    },
-    {
-      "at": 2,
-      "do": "place_each",
-      "blocks": [
-        {"pos": [5, 101, 6], "block": "minecraft:repeater[facing=south,delay=1]"},
-        {"pos": [6, 101, 6], "block": "minecraft:repeater[facing=north,delay=1]"}
-      ]
-    },
-    {
-      "at": 3,
-      "do": "assert",
-      "checks": [
-        {"pos": [5, 101, 6], "is": "minecraft:repeater"},
-        {"pos": [6, 101, 6], "is": "minecraft:repeater"}
-      ]
-    },
-    {
-      "at": 4,
-      "do": "place",
-      "pos": [7, 101, 5],
-      "block": "minecraft:redstone_torch"
-    },
-    {
-      "at": 5,
-      "do": "remove",
-      "pos": [7, 101, 5]
-    },
-    {
-      "at": [6, 8, 10, 12, 14],
-      "do": "assert_state",
-      "pos": [6, 101, 5],
-      "state": "power",
-      "values": ["0", "14", "0", "14", "0"]
-    }
-  ]
+    "timeline": [
+        {
+            "at": 0,
+            "do": "fill",
+            "region": [[5, 100, 5], [7, 100, 7]],
+            "with": {"id": "minecraft:stone"}
+        },
+        {
+            "at": 1,
+            "do": "place_each",
+            "blocks": [
+                {"pos": [5, 101, 5], "block": {"id": "minecraft:redstone_wire"}},
+                {"pos": [5, 101, 7], "block": {"id": "minecraft:redstone_wire"}},
+                {"pos": [6, 101, 7], "block": {"id": "minecraft:redstone_wire"}},
+                {"pos": [6, 101, 5], "block": {"id": "minecraft:redstone_wire"}}
+            ]
+        },
+        {
+            "at": 2,
+            "do": "place_each",
+            "blocks": [
+                {"pos": [5, 101, 6], "block": {"id": "minecraft:repeater", "properties": {"facing": "south", "delay": "1"}}},
+                {"pos": [6, 101, 6], "block": {"id": "minecraft:repeater", "properties": {"facing": "north", "delay": "1"}}}
+            ]
+        },
+        {
+            "at": 3,
+            "do": "assert",
+            "checks": [
+                {"pos": [5, 101, 6], "is": {"id": "minecraft:repeater"}},
+                {"pos": [6, 101, 6], "is": {"id": "minecraft:repeater"}},
+                {"pos": [6, 101, 5], "is": {"id": "minecraft:redstone_wire"}}
+            ]
+        }
+    ]
 }

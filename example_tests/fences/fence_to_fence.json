@@ -1,40 +1,33 @@
 {
-  "flintVersion": "0.1",
-  "name": "fence_connects_to_fence",
-  "description": "Verify that two adjacent oak fences connect to each other",
-  "tags": ["fences"],
-  "dependencies": ["basic_block_placement"],
-  "setup": {
-    "cleanup": {
-      "region": [[0, 95, 0], [10, 105, 10]]
-    }
-  },
-  "timeline": [
-    {
-      "at": 0,
-      "do": "place",
-      "pos": [5, 100, 5],
-      "block": "minecraft:oak_fence"
+    "name": "fence_connects_to_fence",
+    "description": "Verify that two adjacent oak fences connect to each other",
+    "tags": ["fences"],
+    "dependencies": ["basic_block_placement"],
+    "setup": {
+        "cleanup": {
+            "region": [[0, 95, 0], [10, 105, 10]]
+        }
     },
-    {
-      "at": 1,
-      "do": "place",
-      "pos": [6, 100, 5],
-      "block": "minecraft:oak_fence"
-    },
-    {
-      "at": 3,
-      "do": "assert_state",
-      "pos": [5, 100, 5],
-      "state": "east",
-      "values": ["true"]
-    },
-    {
-      "at": 3,
-      "do": "assert_state",
-      "pos": [6, 100, 5],
-      "state": "west",
-      "values": ["true"]
-    }
-  ]
+    "timeline": [
+        {
+            "at": 0,
+            "do": "place",
+            "pos": [5, 100, 5],
+            "block": {"id": "minecraft:oak_fence"}
+        },
+        {
+            "at": 1,
+            "do": "place",
+            "pos": [6, 100, 5],
+            "block": {"id": "minecraft:oak_fence"}
+        },
+        {
+            "at": 3,
+            "do": "assert",
+            "checks": [
+                {"pos": [5, 100, 5], "is": {"id": "minecraft:oak_fence", "east": "true"}},
+                {"pos": [6, 100, 5], "is": {"id": "minecraft:oak_fence", "west": "true"}}
+            ]
+        }
+    ]
 }

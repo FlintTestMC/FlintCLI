@@ -1,40 +1,32 @@
 {
-  "flintVersion": "0.1",
-  "name": "water_source_block",
-  "description": "Verify that a water source block can be placed and detected",
-  "tags": ["water"],
-  "dependencies": ["basic_block_placement"],
-  "setup": {
-    "cleanup": {
-      "region": [[0, 95, 0], [14, 105, 14]]
-    }
-  },
-  "timeline": [
-    {
-      "at": 0,
-      "do": "fill",
-      "region": [[5, 100, 5], [10, 100, 10]],
-      "with": "minecraft:glass"
+    "name": "water_source_block",
+    "description": "Verify that a water source block can be placed and detected",
+    "tags": ["water"],
+    "dependencies": ["basic_block_placement"],
+    "setup": {
+        "cleanup": {
+            "region": [[0, 95, 0], [14, 105, 14]]
+        }
     },
-    {
-      "at": 1,
-      "do": "place",
-      "pos": [7, 101, 7],
-      "block": "minecraft:water"
-    },
-    {
-      "at": 3,
-      "do": "assert",
-      "checks": [
-        {"pos": [7, 101, 7], "is": "minecraft:water"}
-      ]
-    },
-    {
-      "at": 3,
-      "do": "assert_state",
-      "pos": [7, 101, 7],
-      "state": "level",
-      "values": ["0"]
-    }
-  ]
+    "timeline": [
+        {
+            "at": 0,
+            "do": "fill",
+            "region": [[5, 100, 5], [10, 100, 10]],
+            "with": {"id": "minecraft:glass"}
+        },
+        {
+            "at": 1,
+            "do": "place",
+            "pos": [7, 101, 7],
+            "block": {"id": "minecraft:water", "properties": {"level": 0}}
+        },
+        {
+            "at": 3,
+            "do": "assert",
+            "checks": [
+                {"pos": [7, 101, 7], "is": {"id": "minecraft:water", "level": "0"}}
+            ]
+        }
+    ]
 }

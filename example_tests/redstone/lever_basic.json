@@ -1,53 +1,45 @@
 {
-  "flintVersion": "0.1",
-  "name": "lever_powers_adjacent_block",
-  "description": "Verify that a lever can be placed and powers an adjacent block when activated",
-  "tags": ["redstone"],
-  "dependencies": ["basic_block_placement"],
-  "setup": {
-    "cleanup": {
-      "region": [[5, 95, 5], [15, 105, 15]]
-    }
-  },
-  "timeline": [
-    {
-      "at": 0,
-      "do": "place",
-      "pos": [10, 100, 10],
-      "block": "minecraft:stone"
+    "name": "lever_basic",
+    "description": "Verify that a lever can be placed and detected with correct initial state",
+    "tags": ["redstone"],
+    "dependencies": ["basic_block_placement"],
+    "setup": {
+        "cleanup": {
+            "region": [[5, 95, 5], [15, 105, 15]]
+        }
     },
-    {
-      "at": 1,
-      "do": "place",
-      "pos": [10, 101, 10],
-      "block": "minecraft:lever[powered=false,face=floor]"
-    },
-    {
-      "at": 2,
-      "do": "assert",
-      "checks": [
-        {"pos": [10, 101, 10], "is": "minecraft:lever"}
-      ]
-    },
-    {
-      "at": 2,
-      "do": "assert_state",
-      "pos": [10, 101, 10],
-      "state": "powered",
-      "values": ["false"]
-    },
-    {
-      "at": 3,
-      "do": "place",
-      "pos": [10, 101, 10],
-      "block": "minecraft:lever[powered=true,face=floor]"
-    },
-    {
-      "at": 5,
-      "do": "assert_state",
-      "pos": [10, 101, 10],
-      "state": "powered",
-      "values": ["true"]
-    }
-  ]
+    "timeline": [
+        {
+            "at": 0,
+            "do": "place",
+            "pos": [10, 100, 10],
+            "block": {"id": "minecraft:stone"}
+        },
+        {
+            "at": 1,
+            "do": "place",
+            "pos": [10, 101, 10],
+            "block": {"id": "minecraft:lever", "properties": {"powered": "false", "face": "floor", "facing": "north"}}
+        },
+        {
+            "at": 2,
+            "do": "assert",
+            "checks": [
+                {"pos": [10, 101, 10], "is": {"id": "minecraft:lever", "powered": "false"}}
+            ]
+        },
+        {
+            "at": 3,
+            "do": "place",
+            "pos": [10, 101, 10],
+            "block": {"id": "minecraft:lever", "properties": {"powered": "true", "face": "floor", "facing": "north"}}
+        },
+        {
+            "at": 5,
+            "do": "assert",
+            "checks": [
+                {"pos": [10, 101, 10], "is": {"id": "minecraft:lever", "powered": "true"}}
+            ]
+        }
+    ]
 }

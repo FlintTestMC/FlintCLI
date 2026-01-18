@@ -1,40 +1,39 @@
 {
-  "flintVersion": "0.1",
-  "name": "basic_block_placement",
-  "description": "Simple test to verify basic block placement and detection",
-  "tags": ["basic"],
-  "dependencies": [],
-  "setup": {
-    "cleanup": {
-      "region": [[-5, 95, -5], [5, 105, 5]]
-    }
-  },
-  "timeline": [
-    {
-      "at": 0,
-      "do": "place",
-      "pos": [0, 100, 0],
-      "block": "minecraft:stone"
+    "name": "basic_block_placement",
+    "description": "Simple test to verify basic block placement and detection",
+    "tags": ["basic"],
+    "dependencies": [],
+    "setup": {
+        "cleanup": {
+            "region": [[-5, 95, -5], [5, 105, 5]]
+        }
     },
-    {
-      "at": 1,
-      "do": "assert",
-      "checks": [
-        {"pos": [0, 100, 0], "is": "minecraft:stone"}
-      ]
-    },
-    {
-      "at": 2,
-      "do": "place",
-      "pos": [1, 100, 0],
-      "block": "minecraft:oak_planks"
-    },
-    {
-      "at": 3,
-      "do": "assert",
-      "checks": [
-        {"pos": [1, 100, 0], "is": "minecraft:oak_planks"}
-      ]
-    }
-  ]
+    "timeline": [
+        {
+            "at": 0,
+            "do": "place",
+            "pos": [0, 100, 0],
+            "block": {"id": "minecraft:stone"}
+        },
+        {
+            "at": 1,
+            "do": "assert",
+            "checks": [
+                {"pos": [0, 100, 0], "is": {"id": "minecraft:stone"}}
+            ]
+        },
+        {
+            "at": 2,
+            "do": "place",
+            "pos": [1, 100, 0],
+            "block": {"id": "minecraft:oak_planks"}
+        },
+        {
+            "at": 3,
+            "do": "assert",
+            "checks": [
+                {"pos": [1, 100, 0], "is": {"id": "minecraft:oak_planks"}}
+            ]
+        }
+    ]
 }

@@ -24,6 +24,7 @@ const MIN_RETRY_DELAY_MS: u64 = 200;
 pub struct TestExecutor {
     bot: TestBot,
     use_chat_control: bool,
+    action_delay_ms: u64,
 }
 
 impl Default for TestExecutor {
@@ -31,6 +32,7 @@ impl Default for TestExecutor {
         Self {
             bot: TestBot::new(),
             use_chat_control: false,
+            action_delay_ms: COMMAND_DELAY_MS,
         }
     }
 }
@@ -42,6 +44,10 @@ impl TestExecutor {
 
     pub fn set_chat_control(&mut self, enabled: bool) {
         self.use_chat_control = enabled;
+    }
+
+    pub fn set_action_delay(&mut self, delay_ms: u64) {
+        self.action_delay_ms = delay_ms;
     }
 
     fn apply_offset(&self, pos: [i32; 3], offset: [i32; 3]) -> [i32; 3] {
@@ -178,24 +184,6 @@ impl TestExecutor {
 
         // Return whatever we have after all retries
         self.bot.get_block(world_pos).await
-    }
-
-    /// Poll for a block state property at the given position with retries
-    async fn poll_block_state_with_retry(
-        &self,
-        world_pos: [i32; 3],
-        state: &str,
-    ) -> Result<Option<String>> {
-        for attempt in 0..BLOCK_POLL_ATTEMPTS {
-            let state_value = self.bot.get_block_state_property(world_pos, state).await?;
-            if state_value.is_some() {
-                return Ok(state_value);
-            }
-            if attempt < BLOCK_POLL_ATTEMPTS - 1 {
-                tokio::time::sleep(tokio::time::Duration::from_millis(BLOCK_POLL_DELAY_MS)).await;
-            }
-        }
-        Ok(None)
     }
 
     pub async fn connect(&mut self, server: &str) -> Result<()> {
@@ -621,15 +609,16 @@ impl TestExecutor {
         &mut self,
         tick: u32,
         entry: &TimelineEntry,
-        value_idx: usize,
+        _value_idx: usize,
         offset: [i32; 3],
     ) -> Result<bool> {
         match &entry.action_type {
             ActionType::Place { pos, block } => {
                 let world_pos = self.apply_offset(*pos, offset);
+                let block_spec = block.to_command();
                 let cmd = format!(
                     "setblock {} {} {} {}",
-                    world_pos[0], world_pos[1], world_pos[2], block
+                    world_pos[0], world_pos[1], world_pos[2], block_spec
                 );
                 self.bot.send_command(&cmd).await?;
                 println!(
@@ -639,17 +628,19 @@ impl TestExecutor {
                     pos[0],
                     pos[1],
                     pos[2],
-                    block.dimmed()
+                    block_spec.dimmed()
                 );
+                tokio::time::sleep(tokio::time::Duration::from_millis(self.action_delay_ms)).await;
                 Ok(false)
             }
 
             ActionType::PlaceEach { blocks } => {
                 for placement in blocks {
                     let world_pos = self.apply_offset(placement.pos, offset);
+                    let block_spec = placement.block.to_command();
                     let cmd = format!(
                         "setblock {} {} {} {}",
-                        world_pos[0], world_pos[1], world_pos[2], placement.block
+                        world_pos[0], world_pos[1], world_pos[2], block_spec
                     );
                     self.bot.send_command(&cmd).await?;
                     println!(
@@ -659,7 +650,7 @@ impl TestExecutor {
                         placement.pos[0],
                         placement.pos[1],
                         placement.pos[2],
-                        placement.block.dimmed()
+                        block_spec.dimmed()
                     );
                     tokio::time::sleep(tokio::time::Duration::from_millis(PLACE_EACH_DELAY_MS))
                         .await;
@@ -670,6 +661,7 @@ impl TestExecutor {
             ActionType::Fill { region, with } => {
                 let world_min = self.apply_offset(region[0], offset);
                 let world_max = self.apply_offset(region[1], offset);
+                let block_spec = with.to_command();
                 let cmd = format!(
                     "fill {} {} {} {} {} {} {}",
                     world_min[0],
@@ -678,7 +670,7 @@ impl TestExecutor {
                     world_max[0],
                     world_max[1],
                     world_max[2],
-                    with
+                    block_spec
                 );
                 self.bot.send_command(&cmd).await?;
                 println!(
@@ -691,8 +683,9 @@ impl TestExecutor {
                     region[1][0],
                     region[1][1],
                     region[1][2],
-                    with.dimmed()
+                    block_spec.dimmed()
                 );
+                tokio::time::sleep(tokio::time::Duration::from_millis(self.action_delay_ms)).await;
                 Ok(false)
             }
 
@@ -711,6 +704,7 @@ impl TestExecutor {
                     pos[1],
                     pos[2]
                 );
+                tokio::time::sleep(tokio::time::Duration::from_millis(self.action_delay_ms)).await;
                 Ok(false)
             }
 
@@ -719,15 +713,75 @@ impl TestExecutor {
                     let world_pos = self.apply_offset(check.pos, offset);
 
                     // Poll with retries to handle timing issues in CI environments
-                    let actual_block = self.poll_block_with_retry(world_pos, &check.is).await?;
+                    let actual_block = self.poll_block_with_retry(world_pos, &check.is.id).await?;
 
-                    let success = if let Some(ref actual) = actual_block {
-                        Self::block_matches(actual, &check.is)
+                    // Check block type
+                    let block_matches = actual_block
+                        .as_ref()
+                        .is_some_and(|actual| Self::block_matches(actual, &check.is.id));
+
+                    if !block_matches {
+                        anyhow::bail!(
+                            "Block at [{}, {}, {}] is not {} (got {:?})",
+                            check.pos[0],
+                            check.pos[1],
+                            check.pos[2],
+                            check.is.id,
+                            actual_block
+                        );
+                    }
+
+                    // Check state properties if any are specified
+                    if !check.is.properties.is_empty() {
+                        let actual_str = actual_block.as_ref().unwrap();
+                        
+                        for (prop_name, prop_value) in &check.is.properties {
+                            // Convert the expected value to string for comparison
+                            let expected_value = match prop_value {
+                                serde_json::Value::String(s) => s.clone(),
+                                other => other.to_string().trim_matches('"').to_string(),
+                            };
+                            
+                            // Check if the property value is in the block state string
+                            // Block state format examples:
+                            // - "BlockState(id: X, Water { level: _0 })" 
+                            // - "BlockState(id: X, Lever { powered: false })"
+                            // - "BlockState(id: X, Repeater { facing: North })"
+                            // Use lowercase for case-insensitive matching (e.g., "north" matches "North")
+                            let actual_lower = actual_str.to_lowercase();
+                            let prop_pattern = format!("{}: {}", prop_name, expected_value).to_lowercase();
+                            let prop_pattern_quoted = format!("{}: \"{}\"", prop_name, expected_value).to_lowercase();
+                            // Handle numeric values with underscore prefix (e.g., level: _0)
+                            let prop_pattern_underscore = format!("{}: _{}", prop_name, expected_value).to_lowercase();
+                            
+                            let matches = actual_lower.contains(&prop_pattern) 
+                                || actual_lower.contains(&prop_pattern_quoted)
+                                || actual_lower.contains(&prop_pattern_underscore);
+                            
+                            if !matches {
+                                anyhow::bail!(
+                                    "Block at [{}, {}, {}] property '{}' is not '{}' (got {:?})",
+                                    check.pos[0],
+                                    check.pos[1],
+                                    check.pos[2],
+                                    prop_name,
+                                    expected_value,
+                                    actual_str
+                                );
+                            }
+                            
+                            println!(
+                                "    {} Tick {}: assert block at [{}, {}, {}] state {} = {}",
+                                "✓".green(),
+                                tick,
+                                check.pos[0],
+                                check.pos[1],
+                                check.pos[2],
+                                prop_name.dimmed(),
+                                expected_value.dimmed()
+                            );
+                        }
                     } else {
-                        false
-                    };
-
-                    if success {
                         println!(
                             "    {} Tick {}: assert block at [{}, {}, {}] is {}",
                             "✓".green(),
@@ -735,58 +789,11 @@ impl TestExecutor {
                             check.pos[0],
                             check.pos[1],
                             check.pos[2],
-                            check.is.dimmed()
-                        );
-                    } else {
-                        anyhow::bail!(
-                            "Block at [{}, {}, {}] is not {} (got {:?})",
-                            check.pos[0],
-                            check.pos[1],
-                            check.pos[2],
-                            check.is,
-                            actual_block
+                            check.is.id.dimmed()
                         );
                     }
                 }
                 Ok(true)
-            }
-
-            ActionType::AssertState { pos, state, values } => {
-                let world_pos = self.apply_offset(*pos, offset);
-                let expected_value = &values[value_idx];
-
-                // Poll with retries to handle timing issues in CI environments
-                let actual_value = self.poll_block_state_with_retry(world_pos, state).await?;
-
-                let success = if let Some(ref actual) = actual_value {
-                    actual.contains(expected_value)
-                } else {
-                    false
-                };
-
-                if success {
-                    println!(
-                        "    {} Tick {}: assert block at [{}, {}, {}] state {} = {}",
-                        "✓".green(),
-                        tick,
-                        pos[0],
-                        pos[1],
-                        pos[2],
-                        state.dimmed(),
-                        expected_value.dimmed()
-                    );
-                    Ok(true)
-                } else {
-                    anyhow::bail!(
-                        "Block at [{}, {}, {}] state {} is not {} (got {:?})",
-                        pos[0],
-                        pos[1],
-                        pos[2],
-                        state,
-                        expected_value,
-                        actual_value
-                    );
-                }
             }
         }
     }

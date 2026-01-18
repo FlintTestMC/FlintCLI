@@ -1,13 +1,14 @@
 mod bot;
 mod executor;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use colored::Colorize;
 use flint_core::loader::TestLoader;
 use flint_core::results::TestResult;
 use flint_core::spatial::calculate_test_offset_default;
 use flint_core::test_spec::TestSpec;
+use std::path::Path;
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 
@@ -90,6 +91,10 @@ struct Args {
     /// Filter tests by tags (can be specified multiple times)
     #[arg(short = 't', long = "tag")]
     tags: Vec<String>,
+
+    /// Delay in milliseconds between each action (default: 100)
+    #[arg(short = 'd', long = "action-delay", default_value = "100")]
+    action_delay: u64,
 }
 
 #[tokio::main]
@@ -106,18 +111,24 @@ async fn main() -> Result<()> {
     println!("{}", "FlintMC - Minecraft Testing Framework".green().bold());
     println!();
 
-    // Collect test files - use tags if provided, otherwise use path
+    let test_loader = if let Some(ref path) = args.path {
+        println!("{} Loading tests from {}...", "→".blue(), path.display());
+        TestLoader::new(path, args.recursive)
+            .with_context(|| format!("Failed to initialize test loader for path: {}", path.display()))?
+    } else {
+        let default_path = Path::new("FlintBenchmark/tests");
+        TestLoader::new(default_path, true)
+            .with_context(|| format!("Failed to initialize test loader for default path: {}", default_path.display()))?
+    };
+
+    // Collect test files - use tags if provided, otherwise collect all
     let test_files = if !args.tags.is_empty() {
         println!("{} Filtering by tags: {:?}", "→".blue(), args.tags);
-        TestLoader::collect_by_tags(&args.tags)?
-    } else if let Some(ref path) = args.path {
-        TestLoader::collect_test_files(path, args.recursive)?
+        test_loader.collect_by_tags(&args.tags)
+            .with_context(|| format!("Failed to collect tests by tags: {:?}", args.tags))?
     } else {
-        eprintln!(
-            "{} Must specify either a path or tags to filter by",
-            "Error:".red().bold()
-        );
-        std::process::exit(1);
+        test_loader.collect_all_test_files()
+            .context("Failed to collect test files")?
     };
 
     if test_files.is_empty() {
@@ -134,6 +145,16 @@ async fn main() -> Result<()> {
 
     // Connect to server
     let mut executor = executor::TestExecutor::new();
+
+    // Set action delay
+    executor.set_action_delay(args.action_delay);
+    if args.action_delay != 100 {
+        println!(
+            "{} Action delay set to {} ms",
+            "→".yellow(),
+            args.action_delay
+        );
+    }
 
     // Enable chat control if requested
     if args.chat_control {
