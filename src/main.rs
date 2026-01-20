@@ -84,13 +84,13 @@ struct Args {
     #[arg(long)]
     break_after_setup: bool,
 
-    /// Use in-game chat for breakpoint control (type 's' or 'c' in chat)
-    #[arg(long)]
-    chat_control: bool,
-
     /// Filter tests by tags (can be specified multiple times)
     #[arg(short = 't', long = "tag")]
     tags: Vec<String>,
+
+    /// Interactive mode: listen for chat commands (!search, !run, !run-all, !run-tags)
+    #[arg(short = 'i', long)]
+    interactive: bool,
 
     /// Delay in milliseconds between each action (default: 100)
     #[arg(short = 'd', long = "action-delay", default_value = "100")]
@@ -111,7 +111,7 @@ async fn main() -> Result<()> {
     println!("{}", "FlintMC - Minecraft Testing Framework".green().bold());
     println!();
 
-    let test_loader = if let Some(ref path) = args.path {
+    let mut test_loader = if let Some(ref path) = args.path {
         println!("{} Loading tests from {}...", "→".blue(), path.display());
         TestLoader::new(path, args.recursive)
             .with_context(|| format!("Failed to initialize test loader for path: {}", path.display()))?
@@ -131,7 +131,8 @@ async fn main() -> Result<()> {
             .context("Failed to collect test files")?
     };
 
-    if test_files.is_empty() {
+    // In interactive mode, we don't require tests to be found initially
+    if test_files.is_empty() && !args.interactive {
         let location = if !args.tags.is_empty() {
             format!("with tags: {:?}", args.tags)
         } else if let Some(ref path) = args.path {
@@ -143,7 +144,9 @@ async fn main() -> Result<()> {
         std::process::exit(1);
     }
 
-    println!("Found {} test file(s)\n", test_files.len());
+    if !args.interactive {
+        println!("Found {} test file(s)\n", test_files.len());
+    }
 
     // Connect to server
     let mut executor = executor::TestExecutor::new();
@@ -158,13 +161,21 @@ async fn main() -> Result<()> {
         );
     }
 
-    // Enable chat control if requested
-    if args.chat_control {
-        executor.set_chat_control(true);
+    // Interactive mode: enter command loop
+    if args.interactive {
         println!(
-            "{} Chat control enabled - you can type 's' or 'c' in game chat",
-            "→".yellow()
+            "{} Interactive mode enabled - listening for chat commands",
+            "→".yellow().bold()
         );
+        println!("  Commands: !search, !run, !run-all, !run-tags, !list, !reload, !help, !stop");
+        println!("  During tests: type 's' to step, 'c' to continue\n");
+        
+        println!("{} Connecting to {}...", "→".blue(), args.server);
+        executor.connect(&args.server).await?;
+        println!("{} Connected successfully\n", "✓".green());
+        
+        executor.interactive_mode(&mut test_loader).await?;
+        return Ok(());
     }
 
     println!("{} Connecting to {}...", "→".blue(), args.server);
