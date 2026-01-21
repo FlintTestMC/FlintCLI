@@ -65,7 +65,7 @@ impl TestExecutor {
         // Send help message to chat (without ! to avoid self-triggering)
         self.bot.send_command("say FlintMC Interactive Mode active").await?;
         tokio::time::sleep(tokio::time::Duration::from_millis(COMMAND_DELAY_MS)).await;
-        self.bot.send_command("say Type: help, search, run, run-all, run-tags, list, reload, stop (prefix with !)").await?;
+        self.bot.send_command("say Type: help, search, run, run-all, run-tags, list, reload, stop, record (prefix with !)").await?;
         tokio::time::sleep(tokio::time::Duration::from_millis(COMMAND_DELAY_MS)).await;
 
         // Drain any messages (including our own welcome messages)

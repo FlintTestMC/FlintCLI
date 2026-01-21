@@ -1,114 +1,211 @@
 # Getting Started with FlintMC
 
-FlintMC is now ready to use! Here's how to get started.
+FlintMC is a Minecraft testing framework that connects a bot to your world and executes automated tests. Here's how to get started.
 
 ## Prerequisites
 
-1. **Rust Nightly Toolchain** (required by Azalea):
-   ```bash
-   rustup install nightly
-   # Already set for this directory via rustup override
-   ```
+- **Rust** — Install from [rust-lang.org](https://rust-lang.org/)
+- **Minecraft 1.21.11** — Java Edition
 
-2. **Minecraft Server** (1.21.8+):
-   - You need a running Minecraft server
-   - The bot needs **operator permissions** to run commands and avoid spam kicks
-   - Give the bot op: `/op flintmc_testbot`
-   - **Important**: Without op permissions, the bot will be kicked for spamming when running multiple tests
+## Setting Up Minecraft
 
-## Building
+FlintMC works with both dedicated servers and LAN worlds. This guide uses a LAN world for simplicity.
+
+### Creating the World
+
+For reliable, reproducible tests, configure your world with these settings:
+
+1. **Game Mode**: Creative
+2. **World Type**: Superflat
+3. **Superflat Preset**: Use a stable block layer (stone or bedrock) — avoid grass/dirt which can change over time
+
+In **More World Options → Game Rules**, disable these to prevent random events from interfering with tests:
+
+| Game Rule | Setting |
+|-----------|---------|
+| Spawn mobs | Off |
+| Spawn monsters | Off |
+| Spawn pillager patrols | Off |
+| Spawn phantoms | Off |
+| Spawn Wandering Trader | Off |
+| Spawn Wardens | Off |
+| Daylight cycle | Off |
+| Weather cycle | Off |
+
+> **Why?** Random spawns and environmental changes can interfere with block-based tests and cause unexpected failures.
+
+### Opening to LAN
+
+Once your world is created:
+
+1. Press `Esc` to open the pause menu
+2. Click **Open to LAN**
+3. Set **Allow Cheats** to **On** (required for `/tick` and `/setblock` commands)
+4. Click **Start LAN World**
+
+> **Note**: The port number shown in chat (e.g., "Local game hosted on port 25565") will be needed when starting the bot.
+
+> **For dedicated servers**: The bot needs operator permissions. Run `/op flintmc_testbot` on your server before connecting.
+
+## Starting the Bot
+
+Build and run FlintMC in interactive mode:
 
 ```bash
-cargo build --release
+cargo run -- -i --server localhost:25565
 ```
+
+Replace `25565` with your chosen port if different.
+
+The bot (`flintmc_testbot`) will join your world and announce itself in chat. You'll see:
+```
+FlintMC Interactive Mode active
+Type: help, search, run, run-all, run-tags, list, reload, stop, record (prefix with !)
+```
+
+## Using the Bot
+
+All commands use the `!` prefix. Type commands in Minecraft chat.
+
+### Quick Command Reference
+
+| Command | Description |
+|---------|-------------|
+| `!help` | Show all available commands |
+| `!list` | List all loaded tests |
+| `!search <pattern>` | Search tests by name |
+| `!run <test_name>` | Run a specific test |
+| `!run-all` | Run all tests |
+| `!run-tags <tag1,tag2>` | Run tests with specific tags |
+| `!reload` | Reload test files from disk |
+| `!stop` | Exit interactive mode |
+
+## Creating a Test
+
+The easiest way to create tests is by recording your actions in-game.
+
+### Recording Workflow
+
+1. **Start recording**
+   ```
+   !record my_test_name
+   ```
+   This freezes game time and starts tracking block changes.
+
+2. **Make changes** — Place or break blocks as needed
+
+3. **Advance the timeline**
+   ```
+   !tick
+   ```
+   This captures all block changes since recording started (or since the last `!tick`), then steps the game forward one tick.
+
+4. **Add assertions** — Verify specific blocks at coordinates:
+   ```
+   !assert <x> <y> <z>
+   ```
+   > **Tip**: Press `F3` in Minecraft to see coordinates. Use `F3+F6` and enable looking_at_block in always to permanently display the targeted block info on screen.
+   
+   Or automatically assert all changes from this tick:
+   ```
+   !assert_changes
+   ```
+
+> **💡 Tip: Separate block changes from assertions**
+> 
+> Always put assertions on a **different tick** than block placements. This gives the game time to process block updates (like redstone signals, water flow, or fence connections).
+> 
+> **Good pattern:**
+> ```
+> !record my_test
+> (place blocks)
+> !tick             ← captures block changes, records them on tick 0, advances to tick 1
+> !assert_changes   ← adds assertions on tick 1 (after blocks have updated)
+> !save
+> ```
+> 
+> **Why?** Some block behaviors (redstone, fluids, connections) need at least one game tick to propagate. Asserting on the same tick as placement may fail.
+
+5. **Save the test**
+   ```
+   !save
+   ```
+   The test is saved to `FlintBenchmark/tests/<test_name>.json`
+
+### Other Recording Commands
+
+| Command | Description |
+|---------|-------------|
+| `!next` | Alias for `!tick` |
+| `!cancel` | Discard the current recording |
+
+### Editing Tests
+
+After saving, you can manually edit the JSON file to:
+
+- Add a description
+- Add tags for organization (e.g., `"tags": ["redstone", "basic"]`)
+- Adjust timing between actions
+- Add or remove assertions
+
+See [README.md](README.md) for the full test format specification.
 
 ## Running Tests
 
-### Single Test File
+### From Interactive Mode
+
+```
+!run lever_basic
+!run-all
+!run-tags redstone
+```
+
+### From Command Line
+
 ```bash
-cargo run -- example_tests/basic_placement.json --server localhost:25565
+# Run a single test
+cargo run -- FlintBenchmark/tests/my_test.json --server localhost:25565
+
+# Run all tests in a directory
+cargo run -- FlintBenchmark/tests/ --server localhost:25565 --recursive
 ```
-
-### All Tests in a Directory
-```bash
-cargo run -- example_tests/ --server localhost:25565
-```
-
-### Recursively Run All Tests
-```bash
-cargo run -- example_tests/ --server localhost:25565 --recursive
-```
-
-## Writing Your First Test
-
-Create a file `my_test.json`:
-
-```json
-{
-  "name": "my_first_test",
-  "description": "Test that I can place and verify a block",
-  "actions": [
-    {
-      "tick": 0,
-      "action": "setblock",
-      "pos": [0, 64, 0],
-      "block": "minecraft:diamond_block"
-    },
-    {
-      "tick": 2,
-      "action": "assert_block",
-      "pos": [0, 64, 0],
-      "block": "minecraft:diamond_block"
-    }
-  ]
-}
-```
-
-Run it:
-```bash
-cargo run -- my_test.json --server localhost:25565
-```
-
-## Example Tests Included
-
-- `example_tests/basic_placement.json` - Simple block placement
-- `example_tests/fences/fence_connects_to_block.json` - Fence connection mechanics
-- `example_tests/fences/fence_to_fence.json` - Fence-to-fence connections
-- `example_tests/redstone/lever_basic.json` - Lever state testing
-- `example_tests/water/water_source.json` - Water block testing
-
-## How It Works
-
-1. Bot connects to server as `flintmc_testbot`
-2. Time is frozen with `/tick freeze`
-3. Actions are executed at their specified tick
-4. Between ticks, `/tick step 1` advances time
-5. Assertions verify block states
-6. Time is unfrozen with `/tick unfreeze`
-7. Results are reported
 
 ## Troubleshooting
 
-### "Bot not initialized"
-- Make sure the server is running and accessible
-- Check that the server address is correct
-- Ensure the bot can connect (check server whitelist/firewall)
+### Bot won't connect
+- Ensure the LAN world is open and cheats are enabled
+- Check the port matches between Minecraft and the command
+- Verify no firewall is blocking local connections
 
-### "Bot needs op permissions"
-- Run `/op flintmc_testbot` on your server
-- The bot needs op to execute `/setblock`, `/fill`, and `/tick` commands
+### Commands not working
+- Make sure you're typing in chat (press `T`), not the command console
+- Commands must start with `!` (e.g., `!help`, not `help`)
 
-### Assertion failures
-- Increase the tick wait between setting blocks and asserting
-- Server may need more ticks to process block updates
-- Check that block names are correct (e.g., "minecraft:stone")
+### Tests failing unexpectedly
+- Increase tick delays between placing blocks and asserting
+- Check block IDs use the `minecraft:` prefix
+- Ensure no mobs or environmental changes are interfering
+
+### Debugging a test
+
+Use **step mode** to pause execution at each tick and inspect the world:
+
+```
+!run my_test step
+```
+
+**Where to look**: Tests are executed around position `(0, 100, 0)`. Teleport there to watch the test:
+```
+/tp @s 0 100 0
+```
+
+In step mode, the test pauses after each tick. Type in chat:
+- `s` to step to the next tick
+- `c` to continue running normally
+
+This is invaluable for finding timing issues or incorrect block positions.
 
 ## Next Steps
 
-- Write tests for your custom block mechanics
-- Test redstone contraptions
-- Verify water/lava flow behavior
-- Test piston mechanics
-- Validate door and fence gate behavior
-
-When you provide a vanilla server, you can test the framework immediately!
+- Explore the example tests in `example_tests/`
+- Read the full test format documentation in [README.md](README.md)
