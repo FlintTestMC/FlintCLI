@@ -149,7 +149,7 @@ jobs:
     - name: Run FlintMC Tests
       run: |
         # Run all example tests
-        cargo run --release -- example_tests/ --server localhost:25565 --recursive
+        cargo run --release -- example_tests/ --server localhost:25565 --recursive --verbose
       timeout-minutes: 10
 
     - name: Stop Minecraft Server

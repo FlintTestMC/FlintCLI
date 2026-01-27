@@ -5,12 +5,30 @@ use anyhow::Result;
 use colored::Colorize;
 use flint_core::test_spec::{ActionType, TimelineEntry};
 
-use super::block::block_matches;
+use super::block::{block_matches, extract_block_id};
 
 // Constants for action timing
 pub const BLOCK_POLL_ATTEMPTS: u32 = 10;
 pub const BLOCK_POLL_DELAY_MS: u64 = 50;
 pub const PLACE_EACH_DELAY_MS: u64 = 10;
+
+/// Details about a failed assertion
+pub struct FailureDetail {
+    pub tick: u32,
+    pub expected: String,
+    pub actual: String,
+    pub position: [i32; 3],
+}
+
+/// Outcome of executing a single action
+pub enum ActionOutcome {
+    /// Non-assertion action completed (place, fill, remove)
+    Action,
+    /// Assertion passed
+    AssertPassed,
+    /// Assertion failed with details
+    AssertFailed(FailureDetail),
+}
 
 /// Apply offset to a position
 pub fn apply_offset(pos: [i32; 3], offset: [i32; 3]) -> [i32; 3] {
@@ -45,7 +63,7 @@ pub async fn poll_block_with_retry(
 }
 
 /// Execute a single test action
-/// Returns true if this was an assertion that passed, false otherwise
+/// Returns the outcome: Action (non-assertion), AssertPassed, or AssertFailed with details
 pub async fn execute_action(
     bot: &mut TestBot,
     tick: u32,
@@ -53,7 +71,8 @@ pub async fn execute_action(
     _value_idx: usize,
     offset: [i32; 3],
     action_delay_ms: u64,
-) -> Result<bool> {
+    verbose: bool,
+) -> Result<ActionOutcome> {
     match &entry.action_type {
         ActionType::Place { pos, block } => {
             let world_pos = apply_offset(*pos, offset);
@@ -63,17 +82,19 @@ pub async fn execute_action(
                 world_pos[0], world_pos[1], world_pos[2], block_spec
             );
             bot.send_command(&cmd).await?;
-            println!(
-                "    {} Tick {}: place at [{}, {}, {}] = {}",
-                "→".blue(),
-                tick,
-                pos[0],
-                pos[1],
-                pos[2],
-                block_spec.dimmed()
-            );
+            if verbose {
+                println!(
+                    "    {} Tick {}: place at [{}, {}, {}] = {}",
+                    "→".blue(),
+                    tick,
+                    pos[0],
+                    pos[1],
+                    pos[2],
+                    block_spec.dimmed()
+                );
+            }
             tokio::time::sleep(tokio::time::Duration::from_millis(action_delay_ms)).await;
-            Ok(false)
+            Ok(ActionOutcome::Action)
         }
 
         ActionType::PlaceEach { blocks } => {
@@ -85,18 +106,20 @@ pub async fn execute_action(
                     world_pos[0], world_pos[1], world_pos[2], block_spec
                 );
                 bot.send_command(&cmd).await?;
-                println!(
-                    "    {} Tick {}: place at [{}, {}, {}] = {}",
-                    "→".blue(),
-                    tick,
-                    placement.pos[0],
-                    placement.pos[1],
-                    placement.pos[2],
-                    block_spec.dimmed()
-                );
+                if verbose {
+                    println!(
+                        "    {} Tick {}: place at [{}, {}, {}] = {}",
+                        "→".blue(),
+                        tick,
+                        placement.pos[0],
+                        placement.pos[1],
+                        placement.pos[2],
+                        block_spec.dimmed()
+                    );
+                }
                 tokio::time::sleep(tokio::time::Duration::from_millis(PLACE_EACH_DELAY_MS)).await;
             }
-            Ok(false)
+            Ok(ActionOutcome::Action)
         }
 
         ActionType::Fill { region, with } => {
@@ -114,20 +137,22 @@ pub async fn execute_action(
                 block_spec
             );
             bot.send_command(&cmd).await?;
-            println!(
-                "    {} Tick {}: fill [{},{},{}] to [{},{},{}] = {}",
-                "→".blue(),
-                tick,
-                region[0][0],
-                region[0][1],
-                region[0][2],
-                region[1][0],
-                region[1][1],
-                region[1][2],
-                block_spec.dimmed()
-            );
+            if verbose {
+                println!(
+                    "    {} Tick {}: fill [{},{},{}] to [{},{},{}] = {}",
+                    "→".blue(),
+                    tick,
+                    region[0][0],
+                    region[0][1],
+                    region[0][2],
+                    region[1][0],
+                    region[1][1],
+                    region[1][2],
+                    block_spec.dimmed()
+                );
+            }
             tokio::time::sleep(tokio::time::Duration::from_millis(action_delay_ms)).await;
-            Ok(false)
+            Ok(ActionOutcome::Action)
         }
 
         ActionType::Remove { pos } => {
@@ -137,16 +162,18 @@ pub async fn execute_action(
                 world_pos[0], world_pos[1], world_pos[2]
             );
             bot.send_command(&cmd).await?;
-            println!(
-                "    {} Tick {}: remove at [{}, {}, {}]",
-                "→".blue(),
-                tick,
-                pos[0],
-                pos[1],
-                pos[2]
-            );
+            if verbose {
+                println!(
+                    "    {} Tick {}: remove at [{}, {}, {}]",
+                    "→".blue(),
+                    tick,
+                    pos[0],
+                    pos[1],
+                    pos[2]
+                );
+            }
             tokio::time::sleep(tokio::time::Duration::from_millis(action_delay_ms)).await;
-            Ok(false)
+            Ok(ActionOutcome::Action)
         }
 
         ActionType::Assert { checks } => {
@@ -162,14 +189,30 @@ pub async fn execute_action(
                     .is_some_and(|actual| block_matches(actual, &check.is.id));
 
                 if !matches {
-                    anyhow::bail!(
-                        "Block at [{}, {}, {}] is not {} (got {:?})",
-                        check.pos[0],
-                        check.pos[1],
-                        check.pos[2],
-                        check.is.id,
-                        actual_block
-                    );
+                    let actual_name = actual_block
+                        .as_ref()
+                        .map(|s| extract_block_id(s))
+                        .unwrap_or_else(|| "none".to_string());
+
+                    if verbose {
+                        println!(
+                            "    {} Tick {}: assert block at [{}, {}, {}] expected {}, got {}",
+                            "✗".red().bold(),
+                            tick,
+                            check.pos[0],
+                            check.pos[1],
+                            check.pos[2],
+                            check.is.id.green(),
+                            actual_name.red()
+                        );
+                    }
+
+                    return Ok(ActionOutcome::AssertFailed(FailureDetail {
+                        tick,
+                        expected: check.is.id.clone(),
+                        actual: actual_name,
+                        position: check.pos,
+                    }));
                 }
 
                 // Check state properties if any are specified
@@ -197,29 +240,46 @@ pub async fn execute_action(
                             || actual_lower.contains(&prop_pattern_underscore);
 
                         if !prop_matches {
-                            anyhow::bail!(
-                                "Block at [{}, {}, {}] property '{}' is not '{}' (got {:?})",
+                            // Try to extract the actual property value from the block state string
+                            let actual_prop = extract_property_value(actual_str, prop_name)
+                                .unwrap_or_else(|| "?".to_string());
+
+                            if verbose {
+                                println!(
+                                    "    {} Tick {}: assert block at [{}, {}, {}] state {} expected {}, got {}",
+                                    "✗".red().bold(),
+                                    tick,
+                                    check.pos[0],
+                                    check.pos[1],
+                                    check.pos[2],
+                                    prop_name.dimmed(),
+                                    expected_value.green(),
+                                    actual_prop.red()
+                                );
+                            }
+
+                            return Ok(ActionOutcome::AssertFailed(FailureDetail {
+                                tick,
+                                expected: format!("{}={}", prop_name, expected_value),
+                                actual: format!("{}={}", prop_name, actual_prop),
+                                position: check.pos,
+                            }));
+                        }
+
+                        if verbose {
+                            println!(
+                                "    {} Tick {}: assert block at [{}, {}, {}] state {} = {}",
+                                "✓".green(),
+                                tick,
                                 check.pos[0],
                                 check.pos[1],
                                 check.pos[2],
-                                prop_name,
-                                expected_value,
-                                actual_str
+                                prop_name.dimmed(),
+                                expected_value.dimmed()
                             );
                         }
-
-                        println!(
-                            "    {} Tick {}: assert block at [{}, {}, {}] state {} = {}",
-                            "✓".green(),
-                            tick,
-                            check.pos[0],
-                            check.pos[1],
-                            check.pos[2],
-                            prop_name.dimmed(),
-                            expected_value.dimmed()
-                        );
                     }
-                } else {
+                } else if verbose {
                     println!(
                         "    {} Tick {}: assert block at [{}, {}, {}] is {}",
                         "✓".green(),
@@ -231,7 +291,30 @@ pub async fn execute_action(
                     );
                 }
             }
-            Ok(true)
+            Ok(ActionOutcome::AssertPassed)
         }
     }
+}
+
+/// Extract a property value from an Azalea block state debug string
+/// Input: "BlockState(id: 6795, OakFence { east: false, north: true })", "east"
+/// Output: Some("false")
+fn extract_property_value(block_state_str: &str, prop_name: &str) -> Option<String> {
+    let lower = block_state_str.to_lowercase();
+    let prop_lower = prop_name.to_lowercase();
+
+    // Look for "prop_name: value" pattern
+    let pattern = format!("{}: ", prop_lower);
+    if let Some(start) = lower.find(&pattern) {
+        let value_start = start + pattern.len();
+        let rest = &block_state_str[value_start..];
+        // Value ends at comma, space before }, or }
+        let end = rest.find(|c: char| c == ',' || c == '}').unwrap_or(rest.len());
+        let value = rest[..end].trim().trim_matches('_');
+        if !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+
+    None
 }

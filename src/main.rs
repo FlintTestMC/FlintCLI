@@ -4,12 +4,15 @@ mod executor;
 use anyhow::{Context, Result};
 use clap::Parser;
 use colored::Colorize;
+use executor::FailureDetail;
 use flint_core::loader::TestLoader;
 use flint_core::results::TestResult;
 use flint_core::spatial::calculate_test_offset_default;
 use flint_core::test_spec::TestSpec;
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::Instant;
 use tracing_subscriber::EnvFilter;
 
 // Constants
@@ -38,7 +41,7 @@ fn print_chunk_header(chunk_idx: usize, total_chunks: usize, chunk_len: usize) {
     println!();
 }
 
-/// Print test summary
+/// Print verbose test summary (used in -v mode)
 fn print_test_summary(results: &[TestResult]) {
     println!("\n{}", "═".repeat(SEPARATOR_WIDTH).dimmed());
     println!("{}", "Test Summary".cyan().bold());
@@ -63,6 +66,149 @@ fn print_test_summary(results: &[TestResult]) {
         total_failed.to_string().red()
     );
 }
+
+/// Print concise summary (default mode)
+fn print_concise_summary(
+    results: &[TestResult],
+    failures: &[(String, FailureDetail)],
+    elapsed: std::time::Duration,
+) {
+    let total = results.len();
+    let total_passed = results.iter().filter(|r| r.success).count();
+    let total_failed = total - total_passed;
+    let secs = elapsed.as_secs_f64();
+
+    println!();
+    if total_failed == 0 {
+        println!(
+            "{} All {} tests passed ({:.3}s)",
+            "✓".green().bold(),
+            format_number(total),
+            secs
+        );
+    } else {
+        println!(
+            "{} of {} tests failed ({:.3}s)",
+            format_number(total_failed).red().bold(),
+            format_number(total),
+            secs
+        );
+        println!();
+        print_failure_tree(failures);
+        println!();
+        println!(
+            "{} passed, {} failed",
+            format_number(total_passed).green(),
+            format_number(total_failed).red()
+        );
+    }
+    println!();
+}
+
+/// Format a number with comma separators (e.g., 1247 -> "1,247")
+fn format_number(n: usize) -> String {
+    let s = n.to_string();
+    let mut result = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            result.push(',');
+        }
+        result.push(c);
+    }
+    result
+}
+
+// ── Failure tree rendering ──────────────────────────────────
+
+/// A tree node for grouping failures by path segments
+struct TreeNode {
+    children: BTreeMap<String, TreeNode>,
+    failure: Option<FailureDetail>,
+}
+
+impl TreeNode {
+    fn new() -> Self {
+        Self {
+            children: BTreeMap::new(),
+            failure: None,
+        }
+    }
+
+    fn insert(&mut self, segments: &[&str], detail: FailureDetail) {
+        if segments.is_empty() {
+            self.failure = Some(detail);
+            return;
+        }
+        let child = self.children.entry(segments[0].to_string()).or_insert_with(TreeNode::new);
+        if segments.len() == 1 {
+            child.failure = Some(detail);
+        } else {
+            child.insert(&segments[1..], detail);
+        }
+    }
+}
+
+/// Print the failure tree
+fn print_failure_tree(failures: &[(String, FailureDetail)]) {
+    let mut root = TreeNode::new();
+
+    for (name, detail) in failures {
+        let segments: Vec<&str> = name.split('/').collect();
+        // Use a placeholder FailureDetail since we can't clone
+        root.insert(&segments, FailureDetail {
+            tick: detail.tick,
+            expected: detail.expected.clone(),
+            actual: detail.actual.clone(),
+            position: detail.position,
+        });
+    }
+
+    // Render each top-level child
+    let keys: Vec<_> = root.children.keys().cloned().collect();
+    for (i, key) in keys.iter().enumerate() {
+        let is_last = i == keys.len() - 1;
+        let child = root.children.get(key).unwrap();
+        render_tree_node(key, child, "", is_last);
+    }
+}
+
+fn render_tree_node(name: &str, node: &TreeNode, prefix: &str, is_last: bool) {
+    let connector = if is_last { "└── " } else { "├── " };
+    let child_prefix = if is_last { "    " } else { "│   " };
+
+    if node.children.is_empty() {
+        // Leaf node: print name with failure detail
+        if let Some(ref detail) = node.failure {
+            println!("{}{}{}", prefix, connector, name);
+            let detail_connector = if is_last { "    " } else { "│   " };
+            println!(
+                "{}{}└─ t{}: expected {}, got {} @ ({},{},{})",
+                prefix,
+                detail_connector,
+                detail.tick,
+                detail.expected.green(),
+                detail.actual.red(),
+                detail.position[0],
+                detail.position[1],
+                detail.position[2]
+            );
+        } else {
+            println!("{}{}{}", prefix, connector, name);
+        }
+    } else {
+        // Branch node
+        println!("{}{}{}", prefix, connector, name);
+        let new_prefix = format!("{}{}", prefix, child_prefix);
+        let keys: Vec<_> = node.children.keys().cloned().collect();
+        for (i, key) in keys.iter().enumerate() {
+            let child_is_last = i == keys.len() - 1;
+            let child = node.children.get(key).unwrap();
+            render_tree_node(key, child, &new_prefix, child_is_last);
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
 
 #[derive(Parser, Debug)]
 #[command(name = "flintmc")]
@@ -95,6 +241,14 @@ struct Args {
     /// Delay in milliseconds between each action (default: 100)
     #[arg(short = 'd', long = "action-delay", default_value = "100")]
     action_delay: u64,
+
+    /// Verbose output: show all per-action details during test execution
+    #[arg(short, long)]
+    verbose: bool,
+
+    /// Quiet mode: suppress progress bar
+    #[arg(short, long)]
+    quiet: bool,
 }
 
 #[tokio::main]
@@ -107,12 +261,17 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
+    let verbose = args.verbose;
 
-    println!("{}", "FlintMC - Minecraft Testing Framework".green().bold());
-    println!();
+    if verbose {
+        println!("{}", "FlintMC - Minecraft Testing Framework".green().bold());
+        println!();
+    }
 
     let mut test_loader = if let Some(ref path) = args.path {
-        println!("{} Loading tests from {}...", "→".blue(), path.display());
+        if verbose {
+            println!("{} Loading tests from {}...", "→".blue(), path.display());
+        }
         TestLoader::new(path, args.recursive)
             .with_context(|| format!("Failed to initialize test loader for path: {}", path.display()))?
     } else {
@@ -123,7 +282,9 @@ async fn main() -> Result<()> {
 
     // Collect test files - use tags if provided, otherwise collect all
     let test_files = if !args.tags.is_empty() {
-        println!("{} Filtering by tags: {:?}", "→".blue(), args.tags);
+        if verbose {
+            println!("{} Filtering by tags: {:?}", "→".blue(), args.tags);
+        }
         test_loader.collect_by_tags(&args.tags)
             .with_context(|| format!("Failed to collect tests by tags: {:?}", args.tags))?
     } else {
@@ -144,7 +305,7 @@ async fn main() -> Result<()> {
         std::process::exit(1);
     }
 
-    if !args.interactive {
+    if verbose && !args.interactive {
         println!("Found {} test file(s)\n", test_files.len());
     }
 
@@ -153,7 +314,10 @@ async fn main() -> Result<()> {
 
     // Set action delay
     executor.set_action_delay(args.action_delay);
-    if args.action_delay != 100 {
+    executor.set_verbose(args.verbose);
+    executor.set_quiet(args.quiet);
+
+    if verbose && args.action_delay != 100 {
         println!(
             "{} Action delay set to {} ms",
             "→".yellow(),
@@ -169,40 +333,52 @@ async fn main() -> Result<()> {
         );
         println!("  Commands: !search, !run, !run-all, !run-tags, !list, !reload, !help, !stop");
         println!("  During tests: type 's' to step, 'c' to continue\n");
-        
+
         println!("{} Connecting to {}...", "→".blue(), args.server);
         executor.connect(&args.server).await?;
         println!("{} Connected successfully\n", "✓".green());
-        
+
         executor.interactive_mode(&mut test_loader).await?;
         return Ok(());
     }
 
-    println!("{} Connecting to {}...", "→".blue(), args.server);
+    if verbose {
+        println!("{} Connecting to {}...", "→".blue(), args.server);
+    }
     executor.connect(&args.server).await?;
-    println!("{} Connected successfully\n", "✓".green());
+    if verbose {
+        println!("{} Connected successfully\n", "✓".green());
+    }
 
     // Load all tests and run in chunks
     let total_tests = test_files.len();
     let chunks: Vec<_> = test_files.chunks(CHUNK_SIZE).collect();
     let total_chunks = chunks.len();
 
-    println!(
-        "{} Running {} tests in {} chunk(s) of up to {}",
-        "→".blue().bold(),
-        total_tests,
-        total_chunks,
-        CHUNK_SIZE
-    );
-    println!(
-        "  Each chunk uses a {}x{} grid around spawn\n",
-        GRID_SIZE, GRID_SIZE
-    );
+    if verbose {
+        println!(
+            "{} Running {} tests in {} chunk(s) of up to {}",
+            "→".blue().bold(),
+            total_tests,
+            total_chunks,
+            CHUNK_SIZE
+        );
+        println!(
+            "  Each chunk uses a {}x{} grid around spawn\n",
+            GRID_SIZE, GRID_SIZE
+        );
+    } else {
+        println!("Running {} tests...", format_number(total_tests));
+    }
 
+    let start_time = Instant::now();
     let mut all_results = Vec::new();
+    let mut all_failures: Vec<(String, FailureDetail)> = Vec::new();
 
     for (chunk_idx, chunk) in chunks.iter().enumerate() {
-        print_chunk_header(chunk_idx, total_chunks, chunk.len());
+        if verbose {
+            print_chunk_header(chunk_idx, total_chunks, chunk.len());
+        }
 
         let mut tests_with_offsets = Vec::new();
         for (test_index, test_file) in chunk.iter().enumerate() {
@@ -210,14 +386,16 @@ async fn main() -> Result<()> {
                 Ok(test) => {
                     // Calculate offset within this chunk (10x10 grid)
                     let offset = calculate_test_offset_default(test_index, chunk.len());
-                    println!(
-                        "  {} Grid position: {} (offset: [{}, {}, {}])",
-                        "→".blue(),
-                        format!("[{}/{}]", test_index + 1, chunk.len()).dimmed(),
-                        offset[0],
-                        offset[1],
-                        offset[2]
-                    );
+                    if verbose {
+                        println!(
+                            "  {} Grid position: {} (offset: [{}, {}, {}])",
+                            "→".blue(),
+                            format!("[{}/{}]", test_index + 1, chunk.len()).dimmed(),
+                            offset[0],
+                            offset[1],
+                            offset[2]
+                        );
+                    }
                     tests_with_offsets.push((test, offset));
                 }
                 Err(e) => {
@@ -232,16 +410,19 @@ async fn main() -> Result<()> {
             }
         }
 
-        println!();
+        if verbose {
+            println!();
+        }
 
         // Run this chunk of tests in parallel using merged timeline
-        let chunk_results = executor
+        let output = executor
             .run_tests_parallel(&tests_with_offsets, args.break_after_setup)
             .await?;
 
-        all_results.extend(chunk_results);
+        all_results.extend(output.results);
+        all_failures.extend(output.failures);
 
-        if chunk_idx + 1 < total_chunks {
+        if verbose && chunk_idx + 1 < total_chunks {
             println!(
                 "\n{} Chunk {}/{} complete ({} tests). Moving to next chunk...\n",
                 "✓".green().bold(),
@@ -252,8 +433,15 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Print summary using aggregated results from all chunks
-    print_test_summary(&all_results);
+    let elapsed = start_time.elapsed();
+
+    if verbose {
+        // Print verbose summary
+        print_test_summary(&all_results);
+    } else {
+        // Print concise summary
+        print_concise_summary(&all_results, &all_failures, elapsed);
+    }
 
     if all_results.iter().any(|r| !r.success) {
         std::process::exit(1);

@@ -122,7 +122,7 @@ pub async fn query_gametime(bot: &mut TestBot) -> Result<u32> {
 
 /// Step a single tick using /tick step and verify completion
 /// Returns the time taken in ms
-pub async fn step_tick(bot: &mut TestBot) -> Result<u64> {
+pub async fn step_tick(bot: &mut TestBot, verbose: bool) -> Result<u64> {
     let before = query_gametime(bot).await?;
 
     let start = std::time::Instant::now();
@@ -138,13 +138,15 @@ pub async fn step_tick(bot: &mut TestBot) -> Result<u64> {
 
         if after > before {
             let elapsed = start.elapsed().as_millis() as u64;
-            println!(
-                "    {} Stepped 1 tick (verified: {} -> {}) in {} ms",
-                "→".dimmed(),
-                before,
-                after,
-                elapsed
-            );
+            if verbose {
+                println!(
+                    "    {} Stepped 1 tick (verified: {} -> {}) in {} ms",
+                    "→".dimmed(),
+                    before,
+                    after,
+                    elapsed
+                );
+            }
             return Ok(elapsed);
         }
 
@@ -157,7 +159,7 @@ pub async fn step_tick(bot: &mut TestBot) -> Result<u64> {
 /// Sprint ticks and capture the time taken from server output
 /// Returns the ms per tick from the server's sprint completion message
 /// NOTE: Accounts for Minecraft's off-by-one bug where "tick sprint N" executes N+1 ticks
-pub async fn sprint_ticks(bot: &mut TestBot, ticks: u32) -> Result<u64> {
+pub async fn sprint_ticks(bot: &mut TestBot, ticks: u32, verbose: bool) -> Result<u64> {
     // Clear any pending chat messages
     drain_chat_messages(bot).await;
 
@@ -188,31 +190,37 @@ pub async fn sprint_ticks(bot: &mut TestBot, ticks: u32) -> Result<u64> {
                     && let Ok(ms) = ms_str.trim().parse::<f64>()
                 {
                     let ms_rounded = ms.ceil() as u64;
-                    println!(
-                        "    {} Sprint {} ticks completed in {} ms per tick",
-                        "⚡".dimmed(),
-                        ticks,
-                        ms_rounded
-                    );
+                    if verbose {
+                        println!(
+                            "    {} Sprint {} ticks completed in {} ms per tick",
+                            "⚡".dimmed(),
+                            ticks,
+                            ms_rounded
+                        );
+                    }
                     // Return total time: ms per tick * number of ticks
                     return Ok(ms_rounded * ticks as u64);
                 }
                 // If we found the message but couldn't parse, use default
-                println!(
-                    "    {} Sprint {} ticks completed (timing not parsed)",
-                    "⚡".dimmed(),
-                    ticks
-                );
+                if verbose {
+                    println!(
+                        "    {} Sprint {} ticks completed (timing not parsed)",
+                        "⚡".dimmed(),
+                        ticks
+                    );
+                }
                 return Ok(MIN_RETRY_DELAY_MS);
             }
         }
     }
 
     // Timeout - return default
-    println!(
-        "    {} Sprint {} ticks (no completion message received)",
-        "⚡".dimmed(),
-        ticks
-    );
+    if verbose {
+        println!(
+            "    {} Sprint {} ticks (no completion message received)",
+            "⚡".dimmed(),
+            ticks
+        );
+    }
     Ok(MIN_RETRY_DELAY_MS)
 }

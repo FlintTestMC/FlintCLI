@@ -133,9 +133,9 @@ impl TestExecutor {
 
             let offset = calculate_test_offset_default(0, 1);
             let tests_with_offsets = vec![(test, offset)];
-            let results = self.run_tests_parallel(&tests_with_offsets, step_mode).await?;
+            let output = self.run_tests_parallel(&tests_with_offsets, step_mode).await?;
 
-            for result in &results {
+            for result in &output.results {
                 let status = if result.success { "PASS" } else { "FAIL" };
                 self.bot.send_command(&format!("say [{}] {}", status, result.test_name)).await?;
             }
@@ -156,10 +156,10 @@ impl TestExecutor {
             }
         }
 
-        let results = self.run_tests_parallel(&tests_with_offsets, false).await?;
+        let output = self.run_tests_parallel(&tests_with_offsets, false).await?;
 
-        let passed = results.iter().filter(|r| r.success).count();
-        let failed = results.len() - passed;
+        let passed = output.results.iter().filter(|r| r.success).count();
+        let failed = output.results.len() - passed;
         self.bot.send_command(&format!("say Results: {} passed, {} failed", passed, failed)).await?;
         Ok(())
     }
@@ -182,10 +182,10 @@ impl TestExecutor {
             }
         }
 
-        let results = self.run_tests_parallel(&tests_with_offsets, false).await?;
+        let output = self.run_tests_parallel(&tests_with_offsets, false).await?;
 
-        let passed = results.iter().filter(|r| r.success).count();
-        let failed = results.len() - passed;
+        let passed = output.results.iter().filter(|r| r.success).count();
+        let failed = output.results.len() - passed;
         self.bot.send_command(&format!("say Results: {} passed, {} failed", passed, failed)).await?;
         Ok(())
     }
