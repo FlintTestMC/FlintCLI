@@ -24,6 +24,7 @@ flintmc [OPTIONS] --server <SERVER> [PATH]
 | `--action-delay <MS>` | `-d` | Delay between actions in milliseconds (default: 100) |
 | `--verbose` | `-v` | Show detailed per-action output during execution |
 | `--quiet` | `-q` | Suppress the progress bar |
+| `--format <FORMAT>` | | Output format: `pretty` (default), `json`, `tap`, `junit` |
 
 ## Running tests
 
@@ -87,6 +88,84 @@ Prints every action and assertion as it happens, chunk headers, grid positions, 
 ### Quiet (`-q`)
 
 Same as default but without the progress bar. Useful for CI where carriage returns aren't rendered well.
+
+### JSON (`--format json`)
+
+Machine-readable JSON output. Structured output goes to stdout; logs and progress go to stderr.
+
+```bash
+flintmc -s localhost:25565 -r tests/ --format json 2>/dev/null
+```
+
+```json
+{
+  "summary": {
+    "total": 6,
+    "passed": 5,
+    "failed": 1,
+    "duration_secs": 4.812
+  },
+  "tests": [
+    { "name": "basic_block_placement", "success": true, "total_ticks": 3, "execution_time_ms": 450 },
+    { "name": "lever_basic", "success": false, "total_ticks": 5, "execution_time_ms": 620 }
+  ],
+  "failures": [
+    {
+      "test": "lever_basic",
+      "tick": 5,
+      "expected": "powered=true",
+      "actual": "powered=false",
+      "position": [10, 101, 10]
+    }
+  ]
+}
+```
+
+### TAP (`--format tap`)
+
+[Test Anything Protocol](https://testanything.org/) version 13. Supported by most CI systems.
+
+```bash
+flintmc -s localhost:25565 -r tests/ --format tap 2>/dev/null
+```
+
+```
+TAP version 13
+1..6
+ok 1 - basic_block_placement
+ok 2 - fence_connects_to_block
+not ok 3 - lever_basic
+  ---
+  message: "expected powered=true, got powered=false"
+  at: [10, 101, 10]
+  tick: 5
+  ...
+ok 4 - fence_connects_to_fence
+ok 5 - repeater_feedback_clock
+ok 6 - water_source_block
+```
+
+### JUnit XML (`--format junit`)
+
+JUnit XML format for CI systems like Jenkins, GitLab CI, and GitHub Actions.
+
+```bash
+flintmc -s localhost:25565 -r tests/ --format junit > results.xml 2>build.log
+```
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="6" failures="1" time="4.812">
+  <testsuite name="flintmc" tests="6" failures="1" time="4.812">
+    <testcase classname="" name="basic_block_placement" time="0.450" />
+    <testcase classname="" name="lever_basic" time="0.620">
+      <failure message="expected powered=true, got powered=false at (10,101,10) tick 5"/>
+    </testcase>
+  </testsuite>
+</testsuites>
+```
+
+All non-pretty formats suppress the progress bar and send log messages to stderr, so stdout can be piped cleanly to a file.
 
 ## Debugging with breakpoints
 
