@@ -3,7 +3,8 @@ mod executor;
 mod format;
 
 use anyhow::{Context, Result};
-use clap::{Parser, ValueEnum};
+use clap::{CommandFactory, Parser, ValueEnum};
+use clap_complete::Shell;
 use colored::Colorize;
 use executor::FailureDetail;
 use flint_core::loader::TestLoader;
@@ -286,6 +287,10 @@ struct Args {
     /// Output format for test results
     #[arg(long, value_enum, default_value_t = OutputFormat::Pretty)]
     format: OutputFormat,
+
+    /// Generate shell completions and exit
+    #[arg(long, value_enum)]
+    completions: Option<Shell>,
 }
 
 #[tokio::main]
@@ -299,6 +304,12 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
+
+    if let Some(shell) = args.completions {
+        clap_complete::generate(shell, &mut Args::command(), "flintmc", &mut std::io::stdout());
+        return Ok(());
+    }
+
     let verbose = args.verbose;
 
     if verbose {
