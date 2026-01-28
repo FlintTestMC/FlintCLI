@@ -306,7 +306,12 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     if let Some(shell) = args.completions {
-        clap_complete::generate(shell, &mut Args::command(), "flintmc", &mut std::io::stdout());
+        clap_complete::generate(
+            shell,
+            &mut Args::command(),
+            "flintmc",
+            &mut std::io::stdout(),
+        );
         return Ok(());
     }
 
