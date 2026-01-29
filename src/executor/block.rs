@@ -95,23 +95,23 @@ pub fn extract_block_id(debug_str: &str) -> String {
 /// Input: "minecraft:oak_fence[east=true,west=false]"
 pub fn make_block(block_str: &str) -> Block {
     // Check for properties: "minecraft:oak_fence[east=true,west=false]"
-    if let Some(open_bracket) = block_str.find('[') {
-        if let Some(close_bracket) = block_str.find(']') {
-            let id = block_str[..open_bracket].to_string();
-            let props_str = &block_str[open_bracket + 1..close_bracket];
+    if let Some(open_bracket) = block_str.find('[')
+        && let Some(close_bracket) = block_str.find(']')
+    {
+        let id = block_str[..open_bracket].to_string();
+        let props_str = &block_str[open_bracket + 1..close_bracket];
 
-            let mut properties = HashMap::new();
-            for pair in props_str.split(',') {
-                if let Some((k, v)) = pair.split_once('=') {
-                    properties.insert(
-                        k.trim().to_string(),
-                        serde_json::Value::String(v.trim().to_string()),
-                    );
-                }
+        let mut properties = HashMap::new();
+        for pair in props_str.split(',') {
+            if let Some((k, v)) = pair.split_once('=') {
+                properties.insert(
+                    k.trim().to_string(),
+                    serde_json::Value::String(v.trim().to_string()),
+                );
             }
-
-            return Block { id, properties };
         }
+
+        return Block { id, properties };
     }
 
     Block {
