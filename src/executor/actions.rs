@@ -3,6 +3,7 @@
 use crate::bot::TestBot;
 use anyhow::Result;
 use colored::Colorize;
+use flint_core::results::{ActionOutcome, AssertFailure, InfoType};
 use flint_core::test_spec::{ActionType, TimelineEntry};
 
 use super::block::{block_matches, extract_block_id};
@@ -11,24 +12,6 @@ use super::block::{block_matches, extract_block_id};
 pub const BLOCK_POLL_ATTEMPTS: u32 = 10;
 pub const BLOCK_POLL_DELAY_MS: u64 = 50;
 pub const PLACE_EACH_DELAY_MS: u64 = 10;
-
-/// Details about a failed assertion
-pub struct FailureDetail {
-    pub tick: u32,
-    pub expected: String,
-    pub actual: String,
-    pub position: [i32; 3],
-}
-
-/// Outcome of executing a single action
-pub enum ActionOutcome {
-    /// Non-assertion action completed (place, fill, remove)
-    Action,
-    /// Assertion passed
-    AssertPassed,
-    /// Assertion failed with details
-    AssertFailed(FailureDetail),
-}
 
 /// Apply offset to a position
 pub fn apply_offset(pos: [i32; 3], offset: [i32; 3]) -> [i32; 3] {
@@ -207,11 +190,13 @@ pub async fn execute_action(
                         );
                     }
 
-                    return Ok(ActionOutcome::AssertFailed(FailureDetail {
+                    return Ok(ActionOutcome::AssertFailed(AssertFailure {
                         tick,
-                        expected: check.is.id.clone(),
-                        actual: actual_name,
+                        expected: InfoType::String(check.is.id.clone()),
+                        actual: InfoType::String(actual_name),
                         position: check.pos,
+                        error_message: "Block was different".to_string(),
+                        execution_time_ms: None,
                     }));
                 }
 
@@ -259,11 +244,16 @@ pub async fn execute_action(
                                 );
                             }
 
-                            return Ok(ActionOutcome::AssertFailed(FailureDetail {
+                            return Ok(ActionOutcome::AssertFailed(AssertFailure {
                                 tick,
-                                expected: format!("{}={}", prop_name, expected_value),
-                                actual: format!("{}={}", prop_name, actual_prop),
+                                expected: InfoType::String(format!(
+                                    "{}={}",
+                                    prop_name, expected_value
+                                )),
+                                actual: InfoType::String(format!("{}={}", prop_name, actual_prop)),
                                 position: check.pos,
+                                error_message: "Block was different".to_string(),
+                                execution_time_ms: None,
                             }));
                         }
 

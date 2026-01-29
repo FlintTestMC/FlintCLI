@@ -73,7 +73,7 @@ impl TestBot {
 
             let local = tokio::task::LocalSet::new();
             local.block_on(&rt, async move {
-                async fn handler(bot: Client, event: Event, state: State) -> anyhow::Result<()> {
+                async fn handler(bot: Client, event: Event, state: State) -> Result<()> {
                     match event {
                         Event::Init => {
                             *state.client_handle.write() = Some(bot.clone());

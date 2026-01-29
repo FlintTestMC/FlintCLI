@@ -101,20 +101,19 @@ impl TestExecutor {
         let pattern_lower = pattern.to_lowercase();
         let mut found = 0;
         for test_file in all_test_files {
-            if let Ok(test) = TestSpec::from_file(test_file) {
-                if test.name.to_lowercase().contains(&pattern_lower) {
-                    let tags = if test.tags.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" [{}]", test.tags.join(", "))
-                    };
-                    self.bot
-                        .send_command(&format!("say - {}{}", test.name, tags))
-                        .await?;
-                    found += 1;
-                    tokio::time::sleep(tokio::time::Duration::from_millis(TEST_RESULT_DELAY_MS))
-                        .await;
-                }
+            if let Ok(test) = TestSpec::from_file(test_file)
+                && test.name.to_lowercase().contains(&pattern_lower)
+            {
+                let tags = if test.tags.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", test.tags.join(", "))
+                };
+                self.bot
+                    .send_command(&format!("say - {}{}", test.name, tags))
+                    .await?;
+                found += 1;
+                tokio::time::sleep(tokio::time::Duration::from_millis(TEST_RESULT_DELAY_MS)).await;
             }
         }
         if found == 0 {
@@ -140,22 +139,22 @@ impl TestExecutor {
         // First pass: look for exact match
         let mut found_test = None;
         for test_file in all_test_files {
-            if let Ok(test) = TestSpec::from_file(test_file) {
-                if test.name.to_lowercase() == name_lower {
-                    found_test = Some(test);
-                    break;
-                }
+            if let Ok(test) = TestSpec::from_file(test_file)
+                && test.name.to_lowercase() == name_lower
+            {
+                found_test = Some(test);
+                break;
             }
         }
 
         // Second pass: fall back to partial match if no exact match
         if found_test.is_none() {
             for test_file in all_test_files {
-                if let Ok(test) = TestSpec::from_file(test_file) {
-                    if test.name.to_lowercase().contains(&name_lower) {
-                        found_test = Some(test);
-                        break;
-                    }
+                if let Ok(test) = TestSpec::from_file(test_file)
+                    && test.name.to_lowercase().contains(&name_lower)
+                {
+                    found_test = Some(test);
+                    break;
                 }
             }
         }
@@ -518,7 +517,7 @@ impl TestExecutor {
         }
 
         // Also check for blocks that were removed (in initial but now air/gone)
-        for (pos, _prev_block) in &initial_snapshot {
+        for pos in initial_snapshot.keys() {
             if !current_blocks.contains_key(pos) {
                 // Block is gone (probably outside scan range now, skip)
                 continue;
