@@ -180,34 +180,34 @@ impl RecorderState {
     pub fn convert_actions_to_asserts(&mut self) -> usize {
         let mut converted_count = 0;
 
-        if let Some(step) = self.timeline.last_mut() {
-            if step.tick == self.current_tick {
-                let mut new_actions = Vec::new();
+        if let Some(step) = self.timeline.last_mut()
+            && step.tick == self.current_tick
+        {
+            let mut new_actions = Vec::new();
 
-                // Drain existing actions and convert them
-                for action in step.actions.drain(..) {
-                    match action {
-                        RecordedAction::Place { pos, block } => {
-                            new_actions.push(RecordedAction::Assert { pos, block });
-                            converted_count += 1;
-                        }
-                        RecordedAction::Remove { pos } => {
-                            // Removing a block means asserting it is air
-                            new_actions.push(RecordedAction::Assert {
-                                pos,
-                                block: "minecraft:air".to_string(),
-                            });
-                            converted_count += 1;
-                        }
-                        // Keep existing asserts unchanged
-                        assert_action @ RecordedAction::Assert { .. } => {
-                            new_actions.push(assert_action);
-                        }
+            // Drain existing actions and convert them
+            for action in step.actions.drain(..) {
+                match action {
+                    RecordedAction::Place { pos, block } => {
+                        new_actions.push(RecordedAction::Assert { pos, block });
+                        converted_count += 1;
+                    }
+                    RecordedAction::Remove { pos } => {
+                        // Removing a block means asserting it is air
+                        new_actions.push(RecordedAction::Assert {
+                            pos,
+                            block: "minecraft:air".to_string(),
+                        });
+                        converted_count += 1;
+                    }
+                    // Keep existing asserts unchanged
+                    assert_action @ RecordedAction::Assert { .. } => {
+                        new_actions.push(assert_action);
                     }
                 }
-
-                step.actions = new_actions;
             }
+
+            step.actions = new_actions;
         }
 
         converted_count

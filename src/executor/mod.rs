@@ -10,12 +10,11 @@ use crate::bot::TestBot;
 use anyhow::Result;
 use colored::Colorize;
 use flint_core::loader::TestLoader;
-use flint_core::results::TestResult;
+use flint_core::results::{ActionOutcome, AssertFailure, TestResult};
 use flint_core::test_spec::{TestSpec, TimelineEntry};
 use flint_core::timeline::TimelineAggregate;
 use std::io::Write;
 
-pub use actions::FailureDetail;
 pub use tick::{COMMAND_DELAY_MS, MIN_RETRY_DELAY_MS};
 
 // Timing constants
@@ -30,7 +29,7 @@ const PROGRESS_BAR_WIDTH: usize = 40;
 pub struct TestRunOutput {
     pub results: Vec<TestResult>,
     /// First failure detail per failed test: (test_name, failure_detail)
-    pub failures: Vec<(String, FailureDetail)>,
+    pub failures: Vec<(String, AssertFailure)>,
 }
 
 pub struct TestExecutor {
@@ -356,7 +355,7 @@ impl TestExecutor {
         let mut test_results: Vec<(usize, usize)> = vec![(0, 0); tests_with_offsets.len()];
 
         // Track first failure detail per test
-        let mut test_failures: Vec<Option<FailureDetail>> =
+        let mut test_failures: Vec<Option<AssertFailure>> =
             (0..tests_with_offsets.len()).map(|_| None).collect();
 
         // Track which tests have been cleaned up
@@ -384,11 +383,11 @@ impl TestExecutor {
                         .execute_action(current_tick, entry, *value_idx, *offset)
                         .await
                     {
-                        Ok(actions::ActionOutcome::AssertPassed) => {
+                        Ok(ActionOutcome::AssertPassed) => {
                             test_results[*test_idx].0 += 1;
                         }
-                        Ok(actions::ActionOutcome::Action) => {}
-                        Ok(actions::ActionOutcome::AssertFailed(detail)) => {
+                        Ok(ActionOutcome::Action) => {}
+                        Ok(ActionOutcome::AssertFailed(detail)) => {
                             test_results[*test_idx].1 += 1;
                             if verbose {
                                 println!(
@@ -396,8 +395,8 @@ impl TestExecutor {
                                     "✗".red().bold(),
                                     test.name,
                                     current_tick,
-                                    detail.expected.green(),
-                                    detail.actual.red()
+                                    String::from(&detail.expected).green(),
+                                    String::from(&detail.actual).red()
                                 );
                             }
                             // Store first failure per test
@@ -609,7 +608,7 @@ impl TestExecutor {
         tokio::time::sleep(tokio::time::Duration::from_millis(CLEANUP_DELAY_MS)).await;
 
         // Collect failure details
-        let failures: Vec<(String, FailureDetail)> = tests_with_offsets
+        let failures: Vec<(String, AssertFailure)> = tests_with_offsets
             .iter()
             .enumerate()
             .filter_map(|(idx, (test, _))| {
@@ -628,7 +627,7 @@ impl TestExecutor {
         entry: &TimelineEntry,
         value_idx: usize,
         offset: [i32; 3],
-    ) -> Result<actions::ActionOutcome> {
+    ) -> Result<ActionOutcome> {
         actions::execute_action(
             &mut self.bot,
             tick,
@@ -667,7 +666,7 @@ pub fn format_number(n: u32) -> String {
     let s = n.to_string();
     let mut result = String::with_capacity(s.len() + s.len() / 3);
     for (i, c) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i) % 3 == 0 {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
             result.push(',');
         }
         result.push(c);

@@ -1411,9 +1411,10 @@ dependencies = [
 [[package]]
 name = "flint-core"
 version = "0.1.0"
-source = "git+https://github.com/FlintTestMC/flint-core?rev=640d118#640d1180d7075bf62e9128e6e48d9f26404e202b"
+source = "git+https://github.com/FlintTestMC/flint-core?rev=b04ad23#b04ad23184dca7fd5fe7e57b482827315ff25955"
 dependencies = [
  "anyhow",
+ "colored",
  "serde",
  "serde_json",
 ]

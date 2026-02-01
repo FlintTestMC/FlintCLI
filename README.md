@@ -11,7 +11,7 @@ A command-line tool for running [Flint](https://github.com/FlintTestMC/flint-cor
 
 ## Requirements
 
-- Rust 1.85+ (2024 edition)
+- Rust nightly (`rustup override set nightly`)
 - Minecraft server 1.21.5+
 - Bot needs operator permissions on the server
 
