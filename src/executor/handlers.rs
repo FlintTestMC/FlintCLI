@@ -385,8 +385,7 @@ impl TestExecutor {
         let z = args[2].parse::<i32>().unwrap_or(0);
         let block_pos = [x, y, z];
         let mut blocks = Vec::new();
-        if let Some(pos1) = self.pos1
-        {
+        if let Some(pos1) = self.pos1 {
             let min_x = block_pos[0].min(pos1[0]);
             let max_x = block_pos[0].max(pos1[0]);
             let min_y = block_pos[1].min(pos1[1]);
@@ -401,8 +400,7 @@ impl TestExecutor {
                     }
                 }
             }
-        }
-        else {
+        } else {
             blocks.push(block_pos)
         }
         // Get block at position
