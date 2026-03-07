@@ -362,6 +362,10 @@ impl TestExecutor {
         Ok(())
     }
     pub(super) fn handle_pos1(&mut self, args: &[String]) {
+        if args.is_empty() {
+            self.pos1 = None;
+            return;
+        }
         let x = args[0].parse::<i32>().unwrap_or(0);
         let y = args[1].parse::<i32>().unwrap_or(0);
         let z = args[2].parse::<i32>().unwrap_or(0);

@@ -220,7 +220,7 @@ impl TestExecutor {
                     }
 
                     "!pos1" | "!pos" => {
-                        if args.len() < 3 {
+                        if (args.len() > 0 && args.len() < 3) || args.len() > 3 {
                             self.bot
                                 .send_command("say Usage: !assert <x> <y> <z>")
                                 .await?;
