@@ -17,7 +17,7 @@ impl BoundingBox {
 
     /// Expand the bounding box to include a position
     pub fn expand(&mut self, pos: [i32; 3]) {
-        for i in 0..3 {
+        for (i, _) in pos.iter().enumerate() {
             self.min[i] = self.min[i].min(pos[i]);
             self.max[i] = self.max[i].max(pos[i]);
         }
