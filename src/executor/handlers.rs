@@ -65,6 +65,12 @@ impl TestExecutor {
             .send_command("say Recorder actions: !assert <x> <y> <z>, !assert_changes")
             .await?;
         self.bot
+            .send_command("say Recorder actions: !pos1 <x> <y> <z>, !pos - Allow to use assert for a 3d area")
+            .await?;
+        self.bot
+            .send_command("say Recorder actions: !sprint <tick> - ticks this ticks and asserts after each tick")
+            .await?;
+        self.bot
             .send_command("say !stop - Exit interactive mode")
             .await?;
         Ok(())
@@ -578,6 +584,14 @@ impl TestExecutor {
             self.bot
                 .send_command("say No recording in progress.")
                 .await?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn handle_record_sprint(&mut self, ticks: u32) -> Result<()> {
+        for _ in 0..ticks {
+            self.handle_record_tick().await?;
+            self.handle_record_assert(&self.last_assert_pos.clone()).await?;
         }
         Ok(())
     }

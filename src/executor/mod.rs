@@ -14,7 +14,6 @@ use flint_core::results::{ActionOutcome, AssertFailure, TestResult};
 use flint_core::test_spec::{TestSpec, TimelineEntry};
 use flint_core::timeline::TimelineAggregate;
 use std::io::Write;
-
 pub use tick::{COMMAND_DELAY_MS, MIN_RETRY_DELAY_MS};
 
 // Timing constants
@@ -40,6 +39,7 @@ pub struct TestExecutor {
     quiet: bool,
     fail_fast: bool,
     pos1: Option<[i32; 3]>,
+    last_assert_pos: Vec<String>,
 }
 
 impl Default for TestExecutor {
@@ -52,6 +52,7 @@ impl Default for TestExecutor {
             quiet: false,
             fail_fast: false,
             pos1: None,
+            last_assert_pos: vec![],
         }
     }
 }
@@ -236,7 +237,25 @@ impl TestExecutor {
                                 .await?;
                             continue;
                         }
+                        self.last_assert_pos = args.clone();
                         self.handle_record_assert(&args).await?;
+                    }
+                    "!sprint" => {
+                        if args.len() != 1 {
+                            self.bot.send_command("say Usage: !sprint <ticks>").await?;
+                            continue;
+                        }
+                        let ticks = args[0].parse::<u32>().unwrap_or(1);
+                        if ticks == 0 {
+                            self.bot.send_command("say Sprint ticks must be greater than 0").await?;
+                            continue;
+                        }
+                        if self.last_assert_pos.is_empty(){
+                            self.bot.send_command("say Please assert a position first, which should be used for each string (can be also a 3d area)").await?;
+                            continue;
+                        }
+                        self.handle_record_sprint(ticks)
+                            .await?;
                     }
 
                     "!save" => {
