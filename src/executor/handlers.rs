@@ -26,7 +26,7 @@ pub fn parse_command(message: &str) -> Option<(String, Vec<String>)> {
         return None;
     };
 
-    let parts: Vec<&str> = command_str.trim().split_whitespace().collect();
+    let parts: Vec<&str> = command_str.split_whitespace().collect();
     if parts.is_empty() {
         return None;
     }
@@ -63,6 +63,14 @@ impl TestExecutor {
             .await?;
         self.bot
             .send_command("say Recorder actions: !assert <x> <y> <z>, !assert_changes")
+            .await?;
+        self.bot
+            .send_command(
+                "say Recorder actions: !pos1 <x> <y> <z>, !pos - Allow to use assert for a 3d area",
+            )
+            .await?;
+        self.bot
+            .send_command("say Recorder actions: !sprint <tick> - ticks this ticks and asserts after each tick")
             .await?;
         self.bot
             .send_command("say !stop - Exit interactive mode")
@@ -361,6 +369,16 @@ impl TestExecutor {
 
         Ok(())
     }
+    pub(super) fn handle_pos1(&mut self, args: &[String]) {
+        if args.is_empty() {
+            self.pos1 = None;
+            return;
+        }
+        let x = args[0].parse::<i32>().unwrap_or(0);
+        let y = args[1].parse::<i32>().unwrap_or(0);
+        let z = args[2].parse::<i32>().unwrap_or(0);
+        self.pos1 = Some([x, y, z]);
+    }
 
     pub(super) async fn handle_record_assert(&mut self, args: &[String]) -> Result<()> {
         let _recorder = match self.recorder.as_mut() {
@@ -378,28 +396,47 @@ impl TestExecutor {
         let y = args[1].parse::<i32>().unwrap_or(0);
         let z = args[2].parse::<i32>().unwrap_or(0);
         let block_pos = [x, y, z];
+        let mut blocks = Vec::new();
+        if let Some(pos1) = self.pos1 {
+            let min_x = block_pos[0].min(pos1[0]);
+            let max_x = block_pos[0].max(pos1[0]);
+            let min_y = block_pos[1].min(pos1[1]);
+            let max_y = block_pos[1].max(pos1[1]);
+            let min_z = block_pos[2].min(pos1[2]);
+            let max_z = block_pos[2].max(pos1[2]);
 
-        // Get block at position
-        if let Some(block_str) = self.bot.get_block(block_pos).await? {
-            let block_id = block::extract_block_id(&block_str);
-            let recorder = self.recorder.as_mut().unwrap();
-            recorder.add_assertion(block_pos, &block_id);
-
-            self.bot
-                .send_command(&format!(
-                    "say Added assert at [{}, {}, {}] = {}",
-                    block_pos[0], block_pos[1], block_pos[2], block_id
-                ))
-                .await?;
+            for x in min_x..=max_x {
+                for y in min_y..=max_y {
+                    for z in min_z..=max_z {
+                        blocks.push([x, y, z]);
+                    }
+                }
+            }
         } else {
-            self.bot
-                .send_command(&format!(
-                    "say No block found at [{}, {}, {}]",
-                    block_pos[0], block_pos[1], block_pos[2]
-                ))
-                .await?;
+            blocks.push(block_pos)
         }
+        // Get block at position
+        for pos in blocks {
+            if let Some(block_str) = self.bot.get_block(pos).await? {
+                let block_id = block::extract_block_id(&block_str);
+                let recorder = self.recorder.as_mut().unwrap();
+                recorder.add_assertion(pos, &block_id);
 
+                self.bot
+                    .send_command(&format!(
+                        "say Added assert at [{}, {}, {}] = {}",
+                        pos[0], pos[1], pos[2], block_id
+                    ))
+                    .await?;
+            } else {
+                self.bot
+                    .send_command(&format!(
+                        "say No block found at [{}, {}, {}]",
+                        pos[0], pos[1], pos[2]
+                    ))
+                    .await?;
+            }
+        }
         Ok(())
     }
 
@@ -548,6 +585,15 @@ impl TestExecutor {
         } else {
             self.bot
                 .send_command("say No recording in progress.")
+                .await?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn handle_record_sprint(&mut self, ticks: u32) -> Result<()> {
+        for _ in 0..ticks {
+            self.handle_record_tick().await?;
+            self.handle_record_assert(&self.last_assert_pos.clone())
                 .await?;
         }
         Ok(())

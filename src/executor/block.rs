@@ -106,7 +106,7 @@ pub fn make_block(block_str: &str) -> Block {
             if let Some((k, v)) = pair.split_once('=') {
                 properties.insert(
                     k.trim().to_string(),
-                    serde_json::Value::String(v.trim().to_string()),
+                    serde_json::Value::String(v.strip_prefix('_').unwrap_or(v).trim().to_string()),
                 );
             }
         }
