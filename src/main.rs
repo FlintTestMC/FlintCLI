@@ -117,6 +117,12 @@ struct Args {
     /// Generate shell completions and exit
     #[arg(long, value_enum)]
     completions: Option<Shell>,
+
+    /// Emit per-tick state diffs as JSONL to PATH (single-test only).
+    /// Each line is one event: run_started, tick, assert, or run_completed.
+    /// Coordinates are emitted in test-local space.
+    #[arg(long, value_name = "PATH")]
+    emit_events: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -296,6 +302,17 @@ async fn main() -> Result<()> {
     executor.set_verbose(args.verbose);
     executor.set_quiet(args.quiet || !matches!(args.format, OutputFormat::Pretty));
     executor.set_fail_fast(args.fail_fast);
+    if let Some(events_path) = args.emit_events.clone() {
+        if test_files.len() != 1 {
+            eprintln!(
+                "{} --emit-events requires exactly one test file (got {})",
+                "Error:".red().bold(),
+                test_files.len()
+            );
+            std::process::exit(1);
+        }
+        executor.set_events_path(events_path);
+    }
 
     if verbose && args.action_delay != 100 {
         println!(
