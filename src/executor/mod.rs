@@ -11,8 +11,8 @@ use crate::bot::TestBot;
 use anyhow::Result;
 use colored::Colorize;
 use flint_core::loader::TestLoader;
-use flint_core::results::{ActionOutcome, AssertFailure, TestResult};
-use flint_core::test_spec::{ActionType, TestSpec, TimelineEntry};
+use flint_core::results::{ActionOutcome, AssertFailure, AssertPosition, TestResult};
+use flint_core::test_spec::{ActionType, AssertType, TestSpec, TimelineEntry};
 use flint_core::timeline::TimelineAggregate;
 use std::io::Write;
 pub use tick::{COMMAND_DELAY_MS, MIN_RETRY_DELAY_MS};
@@ -485,9 +485,14 @@ impl TestExecutor {
                                 && let ActionType::Assert { checks } = &entry.action_type
                             {
                                 for check in checks {
+                                    let AssertType::Block(block_check) = check else {
+                                        anyhow::bail!(
+                                            "TODO: emit events for AssertType::Inventory not yet implemented"
+                                        );
+                                    };
                                     events.emit_assert(
                                         current_tick,
-                                        check.pos,
+                                        block_check.pos,
                                         true,
                                         None,
                                         None,
@@ -511,9 +516,14 @@ impl TestExecutor {
                             if let Some(events) = self.events.as_mut() {
                                 let expected: String = (&detail.expected).into();
                                 let actual: String = (&detail.actual).into();
+                                let AssertPosition::Coordinate { x, y, z } = detail.position else {
+                                    anyhow::bail!(
+                                        "TODO: emit events for AssertPosition::Slot not yet implemented"
+                                    );
+                                };
                                 events.emit_assert(
                                     current_tick,
-                                    detail.position,
+                                    [x, y, z],
                                     false,
                                     Some(&expected),
                                     Some(&actual),

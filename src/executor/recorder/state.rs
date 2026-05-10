@@ -2,8 +2,8 @@
 
 use anyhow::Result;
 use flint_core::test_spec::{
-    ActionType, BlockCheck, BlockPlacement, CleanupSpec, SetupSpec, TestSpec, TickSpec,
-    TimelineEntry,
+    ActionType, AssertType, BlockCheck, BlockPlacement, BlockSpec, CleanupSpec, SetupSpec,
+    TestSpec, TickSpec, TimelineEntry,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -252,7 +252,7 @@ impl RecorderState {
                     RecordedAction::Assert { pos, block } => {
                         checks.push(BlockCheck {
                             pos: *pos,
-                            is: make_block(block),
+                            is: BlockSpec::Single(make_block(block)),
                         });
                     }
                 }
@@ -268,9 +268,12 @@ impl RecorderState {
 
             // Emit assert if there are checks
             if !checks.is_empty() {
+                let assert_checks = checks.into_iter().map(AssertType::Block).collect();
                 timeline_entries.push(TimelineEntry {
                     at: TickSpec::Single(step.tick),
-                    action_type: ActionType::Assert { checks },
+                    action_type: ActionType::Assert {
+                        checks: assert_checks,
+                    },
                 });
             }
         }
@@ -280,11 +283,13 @@ impl RecorderState {
             name: self.test_name.replace('/', "_"),
             description: Some(format!("Recorded test: {}", self.test_name)),
             tags: vec!["recorded".to_string()],
+            minecraft_ids: Vec::new(),
             dependencies: Vec::new(),
             setup: Some(SetupSpec {
-                cleanup: CleanupSpec {
+                cleanup: Some(CleanupSpec {
                     region: cleanup_region,
-                },
+                }),
+                player: None,
             }),
             timeline: timeline_entries,
             breakpoints: Vec::new(),
