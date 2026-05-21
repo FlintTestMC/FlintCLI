@@ -90,11 +90,7 @@ impl TestBot {
                             // Try to get sender name (best effort)
                             // Fallback: parse "<Name>"
                             let sender = if message.starts_with('<') {
-                                if let Some(end) = message.find('>') {
-                                    Some(message[1..end].to_string())
-                                } else {
-                                    None
-                                }
+                                message.find('>').map(|end| message[1..end].to_string())
                             } else {
                                 None
                             };

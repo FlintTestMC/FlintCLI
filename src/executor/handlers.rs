@@ -20,11 +20,8 @@ pub fn parse_command(message: &str) -> Option<(String, Vec<String>)> {
     let msg_lower = message.to_lowercase();
 
     // Extract command from message (look for !command pattern)
-    let command_str = if let Some(cmd_start) = msg_lower.find('!') {
-        &message[cmd_start..]
-    } else {
-        return None;
-    };
+    let cmd_start = msg_lower.find('!')?;
+    let command_str = &message[cmd_start..];
 
     let parts: Vec<&str> = command_str.split_whitespace().collect();
     if parts.is_empty() {
@@ -86,7 +83,7 @@ impl TestExecutor {
             .send_command(&format!("say Found {} tests:", all_test_files.len()))
             .await?;
         for test_file in all_test_files {
-            if let Ok(test) = TestSpec::from_file(test_file) {
+            if let Ok(test) = TestSpec::from_file(test_file, false) {
                 let tags = if test.tags.is_empty() {
                     String::new()
                 } else {
@@ -109,7 +106,7 @@ impl TestExecutor {
         let pattern_lower = pattern.to_lowercase();
         let mut found = 0;
         for test_file in all_test_files {
-            if let Ok(test) = TestSpec::from_file(test_file)
+            if let Ok(test) = TestSpec::from_file(test_file, false)
                 && test.name.to_lowercase().contains(&pattern_lower)
             {
                 let tags = if test.tags.is_empty() {
@@ -147,7 +144,7 @@ impl TestExecutor {
         // First pass: look for exact match
         let mut found_test = None;
         for test_file in all_test_files {
-            if let Ok(test) = TestSpec::from_file(test_file)
+            if let Ok(test) = TestSpec::from_file(test_file, false)
                 && test.name.to_lowercase() == name_lower
             {
                 found_test = Some(test);
@@ -158,7 +155,7 @@ impl TestExecutor {
         // Second pass: fall back to partial match if no exact match
         if found_test.is_none() {
             for test_file in all_test_files {
-                if let Ok(test) = TestSpec::from_file(test_file)
+                if let Ok(test) = TestSpec::from_file(test_file, false)
                     && test.name.to_lowercase().contains(&name_lower)
                 {
                     found_test = Some(test);
@@ -214,7 +211,7 @@ impl TestExecutor {
 
         let mut tests_with_offsets = Vec::new();
         for (idx, test_file) in all_test_files.iter().enumerate() {
-            if let Ok(test) = TestSpec::from_file(test_file) {
+            if let Ok(test) = TestSpec::from_file(test_file, false) {
                 let offset = calculate_test_offset_default(idx, all_test_files.len());
                 tests_with_offsets.push((test, offset));
             }
@@ -238,7 +235,7 @@ impl TestExecutor {
         test_loader: &TestLoader,
         tags: &[String],
     ) -> Result<()> {
-        let test_files = test_loader.collect_by_tags(tags)?;
+        let test_files = test_loader.collect_by_tags(tags);
 
         if test_files.is_empty() {
             self.bot
@@ -257,7 +254,7 @@ impl TestExecutor {
 
         let mut tests_with_offsets = Vec::new();
         for (idx, test_file) in test_files.iter().enumerate() {
-            if let Ok(test) = TestSpec::from_file(test_file) {
+            if let Ok(test) = TestSpec::from_file(test_file, false) {
                 let offset = calculate_test_offset_default(idx, test_files.len());
                 tests_with_offsets.push((test, offset));
             }

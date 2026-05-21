@@ -1,7 +1,7 @@
 //! Block-related utilities for parsing, normalization, and matching
 
 use flint_core::test_spec::Block;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 /// Extract block ID and properties from Azalea debug string
 /// Input: "BlockState(id: 6795, OakFence { east: false, ... })"
@@ -31,7 +31,7 @@ pub fn extract_block_id(debug_str: &str) -> String {
         // Fallback for "BlockState { stone, properties: {...} }"
         if let Some(inner_start) = s.find('{') {
             let inner = &s[inner_start + 1..];
-            let end = inner.find(|c| c == ',' || c == '}').unwrap_or(inner.len());
+            let end = inner.find([',', '}']).unwrap_or(inner.len());
             (inner[..end].trim(), None)
         } else {
             ("air", None)
@@ -39,7 +39,7 @@ pub fn extract_block_id(debug_str: &str) -> String {
     } else {
         // Raw string?
         (
-            s.split(|c| c == ',' || c == '{' || c == ' ' || c == '}')
+            s.split([',', '{', ' ', '}'])
                 .next()
                 .unwrap_or(s),
             None,
@@ -101,12 +101,12 @@ pub fn make_block(block_str: &str) -> Block {
         let id = block_str[..open_bracket].to_string();
         let props_str = &block_str[open_bracket + 1..close_bracket];
 
-        let mut properties = HashMap::new();
+        let mut properties = FxHashMap::default();
         for pair in props_str.split(',') {
             if let Some((k, v)) = pair.split_once('=') {
                 properties.insert(
                     k.trim().to_string(),
-                    serde_json::Value::String(v.strip_prefix('_').unwrap_or(v).trim().to_string()),
+                    v.strip_prefix('_').unwrap_or(v).trim().to_string(),
                 );
             }
         }
@@ -116,7 +116,7 @@ pub fn make_block(block_str: &str) -> Block {
 
     Block {
         id: block_str.to_string(),
-        properties: HashMap::new(),
+        properties: FxHashMap::default(),
     }
 }
 
@@ -165,10 +165,7 @@ mod tests {
     fn test_make_block_with_properties() {
         let block = make_block("minecraft:oak_fence[east=true,west=false]");
         assert_eq!(block.id, "minecraft:oak_fence");
-        assert_eq!(
-            block.properties.get("east"),
-            Some(&serde_json::Value::String("true".to_string()))
-        );
+        assert_eq!(block.properties.get("east"), Some(&"true".to_string()));
     }
 
     #[test]

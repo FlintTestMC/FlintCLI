@@ -2,6 +2,7 @@
 
 mod actions;
 mod block;
+mod events;
 mod handlers;
 mod recorder;
 mod tick;
@@ -10,8 +11,8 @@ use crate::bot::TestBot;
 use anyhow::Result;
 use colored::Colorize;
 use flint_core::loader::TestLoader;
-use flint_core::results::{ActionOutcome, AssertFailure, TestResult};
-use flint_core::test_spec::{TestSpec, TimelineEntry};
+use flint_core::results::{ActionOutcome, AssertFailure, AssertPosition, TestResult};
+use flint_core::test_spec::{ActionType, AssertType, TestSpec, TimelineEntry};
 use flint_core::timeline::TimelineAggregate;
 use std::io::Write;
 pub use tick::{COMMAND_DELAY_MS, MIN_RETRY_DELAY_MS};
@@ -40,6 +41,8 @@ pub struct TestExecutor {
     fail_fast: bool,
     pos1: Option<[i32; 3]>,
     last_assert_pos: Vec<String>,
+    events_path: Option<std::path::PathBuf>,
+    events: Option<events::JsonlWriter>,
 }
 
 impl Default for TestExecutor {
@@ -53,6 +56,8 @@ impl Default for TestExecutor {
             fail_fast: false,
             pos1: None,
             last_assert_pos: vec![],
+            events_path: None,
+            events: None,
         }
     }
 }
@@ -76,6 +81,12 @@ impl TestExecutor {
 
     pub fn set_fail_fast(&mut self, fail_fast: bool) {
         self.fail_fast = fail_fast;
+    }
+
+    /// Enable JSONL event emission. The writer is opened lazily once the
+    /// world offset for the (single) test is known.
+    pub fn set_events_path(&mut self, path: std::path::PathBuf) {
+        self.events_path = Some(path);
     }
 
     pub async fn connect(&mut self, server: &str) -> Result<()> {
@@ -312,6 +323,30 @@ impl TestExecutor {
         Ok(blocks)
     }
 
+    /// Scan blocks within an AABB (inclusive bounds, in world coordinates).
+    /// Air is omitted; clamped to vanilla world height limits.
+    async fn scan_region(
+        &self,
+        min: [i32; 3],
+        max: [i32; 3],
+    ) -> Result<std::collections::HashMap<[i32; 3], String>> {
+        let mut blocks = std::collections::HashMap::new();
+        for x in min[0]..=max[0] {
+            for y in min[1].max(-64)..=max[1].min(319) {
+                for z in min[2]..=max[2] {
+                    let pos = [x, y, z];
+                    if let Ok(Some(block)) = self.bot.get_block(pos).await {
+                        let block_id = block::extract_block_id(&block);
+                        if !block_id.to_lowercase().contains("air") {
+                            blocks.insert(pos, block_id);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(blocks)
+    }
+
     /// Run tests in parallel with merged timeline
     pub async fn run_tests_parallel(
         &mut self,
@@ -326,6 +361,19 @@ impl TestExecutor {
                 "→".blue().bold(),
                 tests_with_offsets.len()
             );
+        }
+
+        // Open the events writer if --emit-events was passed. Single-test only;
+        // parallel-grid runs would interleave coordinates from multiple tests.
+        if let Some(events_path) = self.events_path.clone() {
+            if tests_with_offsets.len() != 1 {
+                anyhow::bail!(
+                    "--emit-events requires exactly one test (got {}); pass a single test file",
+                    tests_with_offsets.len()
+                );
+            }
+            let offset = tests_with_offsets[0].1;
+            self.events = Some(events::JsonlWriter::create(&events_path, offset)?);
         }
 
         // Build global merged timeline using flint-core
@@ -383,6 +431,22 @@ impl TestExecutor {
             stepping_mode = !should_continue;
         }
 
+        // Emit `run_started` and pre-compute the scan AABB in world coords.
+        // We pass world coords to the writer; it subtracts the offset so the
+        // emitted event is in test-local space.
+        let scan_bounds: Option<([i32; 3], [i32; 3])> = if self.events.is_some() {
+            let (test, offset) = &tests_with_offsets[0];
+            let region = test.cleanup_region();
+            let world_min = actions::apply_offset(region[0], *offset);
+            let world_max = actions::apply_offset(region[1], *offset);
+            if let Some(events) = self.events.as_mut() {
+                events.run_started(&test.name, [world_min, world_max])?;
+            }
+            Some((world_min, world_max))
+        } else {
+            None
+        };
+
         // Track results per test: (passed_assertions, failed_assertions)
         let mut test_results: Vec<(usize, usize)> = vec![(0, 0); tests_with_offsets.len()];
 
@@ -417,6 +481,24 @@ impl TestExecutor {
                     {
                         Ok(ActionOutcome::AssertPassed) => {
                             test_results[*test_idx].0 += 1;
+                            if let Some(events) = self.events.as_mut()
+                                && let ActionType::Assert { checks } = &entry.action_type
+                            {
+                                for check in checks {
+                                    let AssertType::Block(block_check) = check else {
+                                        anyhow::bail!(
+                                            "TODO: emit events for AssertType::Inventory not yet implemented"
+                                        );
+                                    };
+                                    events.emit_assert(
+                                        current_tick,
+                                        block_check.pos,
+                                        true,
+                                        None,
+                                        None,
+                                    )?;
+                                }
+                            }
                         }
                         Ok(ActionOutcome::Action) => {}
                         Ok(ActionOutcome::AssertFailed(detail)) => {
@@ -430,6 +512,22 @@ impl TestExecutor {
                                     String::from(&detail.expected).green(),
                                     String::from(&detail.actual).red()
                                 );
+                            }
+                            if let Some(events) = self.events.as_mut() {
+                                let expected: String = (&detail.expected).into();
+                                let actual: String = (&detail.actual).into();
+                                let AssertPosition::Coordinate { x, y, z } = detail.position else {
+                                    anyhow::bail!(
+                                        "TODO: emit events for AssertPosition::Slot not yet implemented"
+                                    );
+                                };
+                                events.emit_assert(
+                                    current_tick,
+                                    [x, y, z],
+                                    false,
+                                    Some(&expected),
+                                    Some(&actual),
+                                )?;
                             }
                             // Store first failure per test
                             if test_failures[*test_idx].is_none() {
@@ -503,8 +601,18 @@ impl TestExecutor {
                 stepping_mode = !should_continue;
             }
 
-            // Advance to next tick
-            if current_tick < aggregate.max_tick {
+            // Advance to next tick. With event emission enabled we force
+            // single-step mode so we can scan and diff after every tick —
+            // sprint elides intermediate states the visualizer needs.
+            if let Some((scan_min, scan_max)) = scan_bounds {
+                tick::step_tick(&mut self.bot, verbose).await?;
+                tokio::time::sleep(tokio::time::Duration::from_millis(CLEANUP_DELAY_MS)).await;
+                let world_blocks = self.scan_region(scan_min, scan_max).await?;
+                if let Some(events) = self.events.as_mut() {
+                    events.emit_tick(current_tick, world_blocks)?;
+                }
+                current_tick += 1;
+            } else if current_tick < aggregate.max_tick {
                 if stepping_mode {
                     tick::step_tick(&mut self.bot, verbose).await?;
                     tokio::time::sleep(tokio::time::Duration::from_millis(CLEANUP_DELAY_MS)).await;
@@ -546,6 +654,16 @@ impl TestExecutor {
         // Clear progress bar line
         if show_progress {
             println!();
+        }
+
+        // Emit run_completed (totals are summed across tests, but event mode
+        // is gated to a single test so this collapses to its results).
+        if let Some(events) = self.events.as_mut() {
+            let asserts_passed: u32 =
+                test_results.iter().map(|(p, _)| *p as u32).sum();
+            let asserts_failed: u32 =
+                test_results.iter().map(|(_, f)| *f as u32).sum();
+            events.run_completed(asserts_passed, asserts_failed)?;
         }
 
         // Unfreeze time

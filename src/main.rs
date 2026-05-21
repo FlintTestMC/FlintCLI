@@ -117,6 +117,12 @@ struct Args {
     /// Generate shell completions and exit
     #[arg(long, value_enum)]
     completions: Option<Shell>,
+
+    /// Emit per-tick state diffs as JSONL to PATH (single-test only).
+    /// Each line is one event: run_started, tick, assert, or run_completed.
+    /// Coordinates are emitted in test-local space.
+    #[arg(long, value_name = "PATH")]
+    emit_events: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -173,9 +179,7 @@ async fn main() -> Result<()> {
         if verbose {
             println!("{} Filtering by tags: {:?}", "→".blue(), args.tags);
         }
-        test_loader
-            .collect_by_tags(&args.tags)
-            .with_context(|| format!("Failed to collect tests by tags: {:?}", args.tags))?
+        test_loader.collect_by_tags(&args.tags)
     } else {
         test_loader
             .collect_all_test_files()
@@ -202,7 +206,7 @@ async fn main() -> Result<()> {
     // --list: print test names and exit
     if args.list {
         for test_file in &test_files {
-            match TestSpec::from_file(test_file) {
+            match TestSpec::from_file(test_file, false) {
                 Ok(test) => println!("{}", test.name),
                 Err(e) => {
                     eprintln!(
@@ -240,7 +244,7 @@ async fn main() -> Result<()> {
                 );
             }
             for (test_index, test_file) in chunk.iter().enumerate() {
-                match TestSpec::from_file(test_file) {
+                match TestSpec::from_file(test_file, false) {
                     Ok(test) => {
                         let offset = calculate_test_offset_default(test_index, chunk.len());
                         let max_tick = test.max_tick();
@@ -296,6 +300,17 @@ async fn main() -> Result<()> {
     executor.set_verbose(args.verbose);
     executor.set_quiet(args.quiet || !matches!(args.format, OutputFormat::Pretty));
     executor.set_fail_fast(args.fail_fast);
+    if let Some(events_path) = args.emit_events.clone() {
+        if test_files.len() != 1 {
+            eprintln!(
+                "{} --emit-events requires exactly one test file (got {})",
+                "Error:".red().bold(),
+                test_files.len()
+            );
+            std::process::exit(1);
+        }
+        executor.set_events_path(events_path);
+    }
 
     if verbose && args.action_delay != 100 {
         println!(
@@ -362,7 +377,7 @@ async fn main() -> Result<()> {
 
         let mut tests_with_offsets = Vec::new();
         for (test_index, test_file) in chunk.iter().enumerate() {
-            match TestSpec::from_file(test_file) {
+            match TestSpec::from_file(test_file, false) {
                 Ok(test) => {
                     // Calculate offset within this chunk (10x10 grid)
                     let offset = calculate_test_offset_default(test_index, chunk.len());

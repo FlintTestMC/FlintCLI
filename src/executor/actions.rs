@@ -3,8 +3,9 @@
 use crate::bot::TestBot;
 use anyhow::Result;
 use colored::Colorize;
-use flint_core::results::{ActionOutcome, AssertFailure, InfoType};
-use flint_core::test_spec::{ActionType, TimelineEntry};
+use flint_core::results::{ActionOutcome, AssertFailure, AssertPosition, InfoType};
+use flint_core::test_spec::AssertType::Block;
+use flint_core::test_spec::{ActionType, BlockSpec, TimelineEntry};
 
 use super::block::{block_matches, extract_block_id};
 
@@ -161,15 +162,21 @@ pub async fn execute_action(
 
         ActionType::Assert { checks } => {
             for check in checks {
+                let Block(check) = check else {
+                    anyhow::bail!("TODO: AssertType::Inventory not yet implemented");
+                };
+                let BlockSpec::Single(expected_block) = &check.is else {
+                    anyhow::bail!("TODO: BlockSpec::Multiple not yet implemented");
+                };
                 let world_pos = apply_offset(check.pos, offset);
 
                 // Poll with retries to handle timing issues in CI environments
-                let actual_block = poll_block_with_retry(bot, world_pos, &check.is.id).await?;
+                let actual_block = poll_block_with_retry(bot, world_pos, &expected_block.id).await?;
 
                 // Check block type
                 let matches = actual_block
                     .as_ref()
-                    .is_some_and(|actual| block_matches(actual, &check.is.id));
+                    .is_some_and(|actual| block_matches(actual, &expected_block.id));
 
                 if !matches {
                     let actual_name = actual_block
@@ -185,32 +192,26 @@ pub async fn execute_action(
                             check.pos[0],
                             check.pos[1],
                             check.pos[2],
-                            check.is.id.green(),
+                            expected_block.id.green(),
                             actual_name.red()
                         );
                     }
 
                     return Ok(ActionOutcome::AssertFailed(AssertFailure {
                         tick,
-                        expected: InfoType::String(check.is.id.clone()),
+                        expected: InfoType::String(expected_block.id.clone()),
                         actual: InfoType::String(actual_name),
-                        position: check.pos,
+                        position: AssertPosition::from_array(check.pos),
                         error_message: "Block was different".to_string(),
                         execution_time_ms: None,
                     }));
                 }
 
                 // Check state properties if any are specified
-                if !check.is.properties.is_empty() {
+                if !expected_block.properties.is_empty() {
                     let actual_str = actual_block.as_ref().unwrap();
 
-                    for (prop_name, prop_value) in &check.is.properties {
-                        // Convert the expected value to string for comparison
-                        let expected_value = match prop_value {
-                            serde_json::Value::String(s) => s.clone(),
-                            other => other.to_string().trim_matches('"').to_string(),
-                        };
-
+                    for (prop_name, expected_value) in &expected_block.properties {
                         // Check if the property value is in the block state string
                         let actual_lower = actual_str.to_lowercase();
                         let prop_pattern =
@@ -251,7 +252,7 @@ pub async fn execute_action(
                                     prop_name, expected_value
                                 )),
                                 actual: InfoType::String(format!("{}={}", prop_name, actual_prop)),
-                                position: check.pos,
+                                position: AssertPosition::from_array(check.pos),
                                 error_message: "Block was different".to_string(),
                                 execution_time_ms: None,
                             }));
@@ -278,11 +279,17 @@ pub async fn execute_action(
                         check.pos[0],
                         check.pos[1],
                         check.pos[2],
-                        check.is.id.dimmed()
+                        expected_block.id.dimmed()
                     );
                 }
             }
             Ok(ActionOutcome::AssertPassed)
+        }
+
+        ActionType::UseItemOn { .. }
+        | ActionType::SetSlot { .. }
+        | ActionType::SelectHotbar { .. } => {
+            anyhow::bail!("TODO: ActionType {:?} not yet implemented", entry.action_type);
         }
     }
 }
@@ -300,9 +307,7 @@ fn extract_property_value(block_state_str: &str, prop_name: &str) -> Option<Stri
         let value_start = start + pattern.len();
         let rest = &block_state_str[value_start..];
         // Value ends at comma, space before }, or }
-        let end = rest
-            .find(|c: char| c == ',' || c == '}')
-            .unwrap_or(rest.len());
+        let end = rest.find([',', '}']).unwrap_or(rest.len());
         let value = rest[..end].trim().trim_matches('_');
         if !value.is_empty() {
             return Some(value.to_string());
