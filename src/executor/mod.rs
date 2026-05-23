@@ -254,7 +254,11 @@ impl TestExecutor {
                     "!sprint" => {
                         if args.len() != 1 {
                             self.bot.send_command("say Usage: !sprint <ticks>").await?;
-                            self.bot.send_command("say: please be assert before a start state of a block/region").await?;
+                            self.bot
+                                .send_command(
+                                    "say: please be assert before a start state of a block/region",
+                                )
+                                .await?;
                             continue;
                         }
                         let ticks = args[0].parse::<u32>().unwrap_or(1);
