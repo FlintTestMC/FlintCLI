@@ -17,7 +17,7 @@ jobs:
       uses: actions/setup-java@v4
       with:
         distribution: 'temurin'
-        java-version: '21'
+        java-version: '25'
 
     - name: Set up Rust
       uses: dtolnay/rust-toolchain@nightly
@@ -41,8 +41,8 @@ jobs:
       run: |
         mkdir -p minecraft-server
         cd minecraft-server
-        # Download Fabric 1.21.11 (latest compatible version)
-        wget -O server.jar https://meta.fabricmc.net/v2/versions/loader/1.21.11/0.18.4/1.1.1/server/jar
+        # Download Fabric 26.1.2 (latest compatible version)
+        wget -O server.jar https://meta.fabricmc.net/v2/versions/loader/26.1.2/0.19.2/1.1.1/server/jar
         echo "eula=true" > eula.txt
 
     - name: Configure Minecraft Server

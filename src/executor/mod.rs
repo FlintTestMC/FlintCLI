@@ -660,10 +660,8 @@ impl TestExecutor {
         // Emit run_completed (totals are summed across tests, but event mode
         // is gated to a single test so this collapses to its results).
         if let Some(events) = self.events.as_mut() {
-            let asserts_passed: u32 =
-                test_results.iter().map(|(p, _)| *p as u32).sum();
-            let asserts_failed: u32 =
-                test_results.iter().map(|(_, f)| *f as u32).sum();
+            let asserts_passed: u32 = test_results.iter().map(|(p, _)| *p as u32).sum();
+            let asserts_failed: u32 = test_results.iter().map(|(_, f)| *f as u32).sum();
             events.run_completed(asserts_passed, asserts_failed)?;
         }
 

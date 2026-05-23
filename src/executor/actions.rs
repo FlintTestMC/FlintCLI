@@ -171,7 +171,8 @@ pub async fn execute_action(
                 let world_pos = apply_offset(check.pos, offset);
 
                 // Poll with retries to handle timing issues in CI environments
-                let actual_block = poll_block_with_retry(bot, world_pos, &expected_block.id).await?;
+                let actual_block =
+                    poll_block_with_retry(bot, world_pos, &expected_block.id).await?;
 
                 // Check block type
                 let matches = actual_block
@@ -289,7 +290,10 @@ pub async fn execute_action(
         ActionType::UseItemOn { .. }
         | ActionType::SetSlot { .. }
         | ActionType::SelectHotbar { .. } => {
-            anyhow::bail!("TODO: ActionType {:?} not yet implemented", entry.action_type);
+            anyhow::bail!(
+                "TODO: ActionType {:?} not yet implemented",
+                entry.action_type
+            );
         }
     }
 }

@@ -191,14 +191,17 @@ impl TestBot {
             .ok_or_else(|| anyhow::anyhow!("Bot not initialized"))?;
 
         let block_pos = azalea::BlockPos::new(pos[0], pos[1], pos[2]);
-        let world_lock = client.world();
-        let world = world_lock.read();
-        let block_state = world.get_block_state(block_pos);
+        if let Ok(world_lock) = client.world() {
+            let world = world_lock.read();
+            let block_state = world.get_block_state(block_pos);
 
-        if let Some(state) = block_state {
-            // Return block state as debug string
-            let state_str = format!("{:?}", state);
-            Ok(Some(state_str))
+            if let Some(state) = block_state {
+                // Return block state as debug string
+                let state_str = format!("{:?}", state);
+                Ok(Some(state_str))
+            } else {
+                Ok(None)
+            }
         } else {
             Ok(None)
         }
@@ -211,7 +214,9 @@ impl TestBot {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Bot not initialized"))?;
 
-        let pos = client.position();
-        Ok([pos.x as i32, pos.y as i32, pos.z as i32])
+        if let Ok(pos) = client.position() {
+            return Ok([pos.x as i32, pos.y as i32, pos.z as i32]);
+        }
+        Ok([0, 0, 0])
     }
 }
