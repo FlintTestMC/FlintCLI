@@ -38,12 +38,7 @@ pub fn extract_block_id(debug_str: &str) -> String {
         }
     } else {
         // Raw string?
-        (
-            s.split([',', '{', ' ', '}'])
-                .next()
-                .unwrap_or(s),
-            None,
-        )
+        (s.split([',', '{', ' ', '}']).next().unwrap_or(s), None)
     };
 
     // 2. Normalize Name (PascalCase -> snake_case)

@@ -79,11 +79,7 @@ impl JsonlWriter {
 
     /// Diff `world_blocks` against the previous scan and emit a `tick` event
     /// with the resulting deltas in test-local coords.
-    pub fn emit_tick(
-        &mut self,
-        tick: u32,
-        world_blocks: HashMap<[i32; 3], String>,
-    ) -> Result<()> {
+    pub fn emit_tick(&mut self, tick: u32, world_blocks: HashMap<[i32; 3], String>) -> Result<()> {
         let mut set = Vec::new();
         let mut removed = Vec::new();
 

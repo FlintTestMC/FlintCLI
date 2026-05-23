@@ -202,8 +202,9 @@ impl TestBot {
             } else {
                 Ok(None)
             }
+        } else {
+            Ok(None)
         }
-        else { Ok(None) }
     }
 
     /// Get the bot's current position
@@ -213,9 +214,8 @@ impl TestBot {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Bot not initialized"))?;
 
-        if let Ok(pos) = client.position()
-        {
-            return Ok([pos.x as i32, pos.y as i32, pos.z as i32])
+        if let Ok(pos) = client.position() {
+            return Ok([pos.x as i32, pos.y as i32, pos.z as i32]);
         }
         Ok([0, 0, 0])
     }
