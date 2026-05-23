@@ -5,7 +5,7 @@ edition = "2024"
 license = "MIT"
 
 [dependencies]
-azalea = { git = "https://github.com/azalea-rs/azalea", rev = "1accbac" }
+azalea = {path = "../../rust/azalea/azalea"}
 tokio = { version = "1.48", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

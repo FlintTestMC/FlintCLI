@@ -101,9 +101,9 @@ pub async fn query_gametime(bot: &mut TestBot) -> Result<u32> {
             .await
         {
             // Look for "The time is" message
-            if message.contains("The time is") {
+            if message.contains("The game time is") {
                 // Extract the time value
-                if let Some(time_str) = message.split("The time is ").nth(1) {
+                if let Some(time_str) = message.split("The game time is ").nth(1) {
                     // Parse the number (might have formatting)
                     let time_clean = time_str
                         .chars()
