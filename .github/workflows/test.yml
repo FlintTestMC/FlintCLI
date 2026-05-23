@@ -42,7 +42,7 @@ jobs:
         mkdir -p minecraft-server
         cd minecraft-server
         # Download Fabric 1.21.11 (latest compatible version)
-        wget -O server.jar https://meta.fabricmc.net/v2/versions/loader/1.21.11/0.18.4/1.1.1/server/jar
+        wget -O server.jar https://meta.fabricmc.net/v2/versions/loader/26.1.2/0.18.4/1.1.1/server/jar
         echo "eula=true" > eula.txt
 
     - name: Configure Minecraft Server
