@@ -1,71 +1,29 @@
 //! Test action execution - block placement, assertions, etc.
 
-use crate::bot::TestBot;
 use anyhow::Result;
 use colored::Colorize;
 use flint_core::results::{ActionOutcome, AssertFailure, AssertPosition, InfoType};
 use flint_core::test_spec::AssertType::Block;
-use flint_core::test_spec::{ActionType, BlockSpec, TimelineEntry};
-
-use super::block::{block_matches, extract_block_id};
+use flint_core::test_spec::{ActionType, BlockSpec, TimelineEntry, Item, PlayerSlot};
+use flint_core::traits::{FlintPlayer, FlintWorld};
 
 // Constants for action timing
-pub const BLOCK_POLL_ATTEMPTS: u32 = 10;
-pub const BLOCK_POLL_DELAY_MS: u64 = 50;
 pub const PLACE_EACH_DELAY_MS: u64 = 10;
-
-/// Apply offset to a position
-pub fn apply_offset(pos: [i32; 3], offset: [i32; 3]) -> [i32; 3] {
-    [pos[0] + offset[0], pos[1] + offset[1], pos[2] + offset[2]]
-}
-
-/// Poll for a block at the given position with retries
-/// This handles timing issues in CI environments where block updates may take longer
-pub async fn poll_block_with_retry(
-    bot: &TestBot,
-    world_pos: [i32; 3],
-    expected_block: &str,
-) -> Result<Option<String>> {
-    for attempt in 0..BLOCK_POLL_ATTEMPTS {
-        let block = bot.get_block(world_pos).await?;
-
-        // Check if the block matches what we expect
-        if let Some(ref actual) = block
-            && block_matches(actual, expected_block)
-        {
-            return Ok(block);
-        }
-
-        // If not the last attempt, wait before retrying
-        if attempt < BLOCK_POLL_ATTEMPTS - 1 {
-            tokio::time::sleep(tokio::time::Duration::from_millis(BLOCK_POLL_DELAY_MS)).await;
-        }
-    }
-
-    // Return whatever we have after all retries
-    bot.get_block(world_pos).await
-}
 
 /// Execute a single test action
 /// Returns the outcome: Action (non-assertion), AssertPassed, or AssertFailed with details
-pub async fn execute_action(
-    bot: &mut TestBot,
+pub fn execute_action(
+    world: &mut dyn FlintWorld,
+    player: &mut Option<Box<dyn FlintPlayer>>,
     tick: u32,
     entry: &TimelineEntry,
     _value_idx: usize,
-    offset: [i32; 3],
     action_delay_ms: u64,
     verbose: bool,
 ) -> Result<ActionOutcome> {
     match &entry.action_type {
         ActionType::Place { pos, block } => {
-            let world_pos = apply_offset(*pos, offset);
-            let block_spec = block.to_command();
-            let cmd = format!(
-                "setblock {} {} {} {}",
-                world_pos[0], world_pos[1], world_pos[2], block_spec
-            );
-            bot.send_command(&cmd).await?;
+            world.set_block(*pos, block);
             if verbose {
                 println!(
                     "    {} Tick {}: place at [{}, {}, {}] = {}",
@@ -74,22 +32,16 @@ pub async fn execute_action(
                     pos[0],
                     pos[1],
                     pos[2],
-                    block_spec.dimmed()
+                    block.to_command().dimmed()
                 );
             }
-            tokio::time::sleep(tokio::time::Duration::from_millis(action_delay_ms)).await;
+            std::thread::sleep(std::time::Duration::from_millis(action_delay_ms));
             Ok(ActionOutcome::Action)
         }
 
         ActionType::PlaceEach { blocks } => {
             for placement in blocks {
-                let world_pos = apply_offset(placement.pos, offset);
-                let block_spec = placement.block.to_command();
-                let cmd = format!(
-                    "setblock {} {} {} {}",
-                    world_pos[0], world_pos[1], world_pos[2], block_spec
-                );
-                bot.send_command(&cmd).await?;
+                world.set_block(placement.pos, &placement.block);
                 if verbose {
                     println!(
                         "    {} Tick {}: place at [{}, {}, {}] = {}",
@@ -98,29 +50,31 @@ pub async fn execute_action(
                         placement.pos[0],
                         placement.pos[1],
                         placement.pos[2],
-                        block_spec.dimmed()
+                        placement.block.to_command().dimmed()
                     );
                 }
-                tokio::time::sleep(tokio::time::Duration::from_millis(PLACE_EACH_DELAY_MS)).await;
+                std::thread::sleep(std::time::Duration::from_millis(PLACE_EACH_DELAY_MS));
             }
             Ok(ActionOutcome::Action)
         }
 
         ActionType::Fill { region, with } => {
-            let world_min = apply_offset(region[0], offset);
-            let world_max = apply_offset(region[1], offset);
-            let block_spec = with.to_command();
-            let cmd = format!(
-                "fill {} {} {} {} {} {} {}",
-                world_min[0],
-                world_min[1],
-                world_min[2],
-                world_max[0],
-                world_max[1],
-                world_max[2],
-                block_spec
-            );
-            bot.send_command(&cmd).await?;
+            // Fill coordinates can be potentially inverted
+            let min_x = region[0][0].min(region[1][0]);
+            let max_x = region[0][0].max(region[1][0]);
+            let min_y = region[0][1].min(region[1][1]);
+            let max_y = region[0][1].max(region[1][1]);
+            let min_z = region[0][2].min(region[1][2]);
+            let max_z = region[0][2].max(region[1][2]);
+
+            for x in min_x..=max_x {
+                for y in min_y..=max_y {
+                    for z in min_z..=max_z {
+                        world.set_block([x, y, z], with);
+                    }
+                }
+            }
+
             if verbose {
                 println!(
                     "    {} Tick {}: fill [{},{},{}] to [{},{},{}] = {}",
@@ -132,20 +86,19 @@ pub async fn execute_action(
                     region[1][0],
                     region[1][1],
                     region[1][2],
-                    block_spec.dimmed()
+                    with.to_command().dimmed()
                 );
             }
-            tokio::time::sleep(tokio::time::Duration::from_millis(action_delay_ms)).await;
+            std::thread::sleep(std::time::Duration::from_millis(action_delay_ms));
             Ok(ActionOutcome::Action)
         }
 
         ActionType::Remove { pos } => {
-            let world_pos = apply_offset(*pos, offset);
-            let cmd = format!(
-                "setblock {} {} {} air",
-                world_pos[0], world_pos[1], world_pos[2]
-            );
-            bot.send_command(&cmd).await?;
+            let air = flint_core::test_spec::Block {
+                id: "minecraft:air".to_string(),
+                properties: Default::default(),
+            };
+            world.set_block(*pos, &air);
             if verbose {
                 println!(
                     "    {} Tick {}: remove at [{}, {}, {}]",
@@ -156,7 +109,7 @@ pub async fn execute_action(
                     pos[2]
                 );
             }
-            tokio::time::sleep(tokio::time::Duration::from_millis(action_delay_ms)).await;
+            std::thread::sleep(std::time::Duration::from_millis(action_delay_ms));
             Ok(ActionOutcome::Action)
         }
 
@@ -168,23 +121,35 @@ pub async fn execute_action(
                 let BlockSpec::Single(expected_block) = &check.is else {
                     anyhow::bail!("TODO: BlockSpec::Multiple not yet implemented");
                 };
-                let world_pos = apply_offset(check.pos, offset);
 
-                // Poll with retries to handle timing issues in CI environments
-                let actual_block =
-                    poll_block_with_retry(bot, world_pos, &expected_block.id).await?;
+                let actual = world.get_block(check.pos);
+
+                // Helper function to check ID match (allowing for optional minecraft: prefix difference)
+                let check_id = |actual: &str, expected: &str| -> bool {
+                    let actual_clean = actual.strip_prefix("minecraft:").unwrap_or(actual);
+                    let expected_clean = expected.strip_prefix("minecraft:").unwrap_or(expected);
+                    actual_clean.to_lowercase() == expected_clean.to_lowercase()
+                };
 
                 // Check block type
-                let matches = actual_block
-                    .as_ref()
-                    .is_some_and(|actual| block_matches(actual, &expected_block.id));
+                let matches_id = check_id(&actual.id, &expected_block.id);
+                let mut matches_props = true;
 
-                if !matches {
-                    let actual_name = actual_block
-                        .as_ref()
-                        .map(|s| extract_block_id(s))
-                        .unwrap_or_else(|| "none".to_string());
+                if matches_id {
+                    for (prop_name, expected_value) in &expected_block.properties {
+                        if let Some(actual_value) = actual.properties.get(prop_name) {
+                            if actual_value.to_lowercase() != expected_value.to_lowercase() {
+                                matches_props = false;
+                                break;
+                            }
+                        } else {
+                            matches_props = false;
+                            break;
+                        }
+                    }
+                }
 
+                if !matches_id || !matches_props {
                     if verbose {
                         println!(
                             "    {} Tick {}: assert block at [{}, {}, {}] expected {}, got {}",
@@ -194,85 +159,21 @@ pub async fn execute_action(
                             check.pos[1],
                             check.pos[2],
                             expected_block.id.green(),
-                            actual_name.red()
+                            actual.id.red()
                         );
                     }
 
                     return Ok(ActionOutcome::AssertFailed(AssertFailure {
                         tick,
-                        expected: InfoType::String(expected_block.id.clone()),
-                        actual: InfoType::String(actual_name),
+                        expected: InfoType::Block(expected_block.clone()),
+                        actual: InfoType::Block(actual),
                         position: AssertPosition::from_array(check.pos),
                         error_message: "Block was different".to_string(),
                         execution_time_ms: None,
                     }));
                 }
 
-                // Check state properties if any are specified
-                if !expected_block.properties.is_empty() {
-                    let actual_str = actual_block.as_ref().unwrap();
-
-                    for (prop_name, expected_value) in &expected_block.properties {
-                        // Check if the property value is in the block state string
-                        let actual_lower = actual_str.to_lowercase();
-                        let prop_pattern =
-                            format!("{}: {}", prop_name, expected_value).to_lowercase();
-                        let prop_pattern_quoted =
-                            format!("{}: \"{}\"", prop_name, expected_value).to_lowercase();
-                        // Handle numeric values with underscore prefix (e.g., level: _0)
-                        let prop_pattern_underscore =
-                            format!("{}: _{}", prop_name, expected_value).to_lowercase();
-
-                        let prop_matches = actual_lower.contains(&prop_pattern)
-                            || actual_lower.contains(&prop_pattern_quoted)
-                            || actual_lower.contains(&prop_pattern_underscore);
-
-                        if !prop_matches {
-                            // Try to extract the actual property value from the block state string
-                            let actual_prop = extract_property_value(actual_str, prop_name)
-                                .unwrap_or_else(|| "?".to_string());
-
-                            if verbose {
-                                println!(
-                                    "    {} Tick {}: assert block at [{}, {}, {}] state {} expected {}, got {}",
-                                    "✗".red().bold(),
-                                    tick,
-                                    check.pos[0],
-                                    check.pos[1],
-                                    check.pos[2],
-                                    prop_name.dimmed(),
-                                    expected_value.green(),
-                                    actual_prop.red()
-                                );
-                            }
-
-                            return Ok(ActionOutcome::AssertFailed(AssertFailure {
-                                tick,
-                                expected: InfoType::String(format!(
-                                    "{}={}",
-                                    prop_name, expected_value
-                                )),
-                                actual: InfoType::String(format!("{}={}", prop_name, actual_prop)),
-                                position: AssertPosition::from_array(check.pos),
-                                error_message: "Block was different".to_string(),
-                                execution_time_ms: None,
-                            }));
-                        }
-
-                        if verbose {
-                            println!(
-                                "    {} Tick {}: assert block at [{}, {}, {}] state {} = {}",
-                                "✓".green(),
-                                tick,
-                                check.pos[0],
-                                check.pos[1],
-                                check.pos[2],
-                                prop_name.dimmed(),
-                                expected_value.dimmed()
-                            );
-                        }
-                    }
-                } else if verbose {
+                if verbose {
                     println!(
                         "    {} Tick {}: assert block at [{}, {}, {}] is {}",
                         "✓".green(),
@@ -287,36 +188,35 @@ pub async fn execute_action(
             Ok(ActionOutcome::AssertPassed)
         }
 
-        ActionType::UseItemOn { .. }
-        | ActionType::SetSlot { .. }
-        | ActionType::SelectHotbar { .. } => {
-            anyhow::bail!(
-                "TODO: ActionType {:?} not yet implemented",
-                entry.action_type
-            );
+        ActionType::UseItemOn { pos, face, item } => {
+            let p = player.get_or_insert_with(|| world.create_player());
+            if let Some(item_id) = item {
+                let it = Item::new(item_id);
+                p.set_slot(PlayerSlot::Hotbar1, Some(&it));
+                p.select_hotbar(1);
+            }
+            p.use_item_on(*pos, face);
+            std::thread::sleep(std::time::Duration::from_millis(action_delay_ms));
+            Ok(ActionOutcome::Action)
+        }
+
+        ActionType::SetSlot { slot, item, count } => {
+            let p = player.get_or_insert_with(|| world.create_player());
+            if let Some(item_id) = item {
+                let it = Item::with_count(item_id, *count);
+                p.set_slot(*slot, Some(&it));
+            } else {
+                p.set_slot(*slot, None);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(action_delay_ms));
+            Ok(ActionOutcome::Action)
+        }
+
+        ActionType::SelectHotbar { slot } => {
+            let p = player.get_or_insert_with(|| world.create_player());
+            p.select_hotbar(*slot);
+            std::thread::sleep(std::time::Duration::from_millis(action_delay_ms));
+            Ok(ActionOutcome::Action)
         }
     }
-}
-
-/// Extract a property value from an Azalea block state debug string
-/// Input: "BlockState(id: 6795, OakFence { east: false, north: true })", "east"
-/// Output: Some("false")
-fn extract_property_value(block_state_str: &str, prop_name: &str) -> Option<String> {
-    let lower = block_state_str.to_lowercase();
-    let prop_lower = prop_name.to_lowercase();
-
-    // Look for "prop_name: value" pattern
-    let pattern = format!("{}: ", prop_lower);
-    if let Some(start) = lower.find(&pattern) {
-        let value_start = start + pattern.len();
-        let rest = &block_state_str[value_start..];
-        // Value ends at comma, space before }, or }
-        let end = rest.find([',', '}']).unwrap_or(rest.len());
-        let value = rest[..end].trim().trim_matches('_');
-        if !value.is_empty() {
-            return Some(value.to_string());
-        }
-    }
-
-    None
 }

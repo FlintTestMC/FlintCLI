@@ -1,6 +1,7 @@
 //! Test executor module - core test orchestration
 
 mod actions;
+pub mod adapter;
 mod block;
 mod events;
 mod handlers;
@@ -8,11 +9,13 @@ mod recorder;
 mod tick;
 
 use crate::bot::TestBot;
+use adapter::MinecraftWorld;
 use anyhow::Result;
 use colored::Colorize;
 use flint_core::loader::TestLoader;
 use flint_core::results::{ActionOutcome, AssertFailure, AssertPosition, TestResult};
 use flint_core::test_spec::{ActionType, AssertType, TestSpec, TimelineEntry};
+use flint_core::traits::FlintPlayer;
 use flint_core::timeline::TimelineAggregate;
 use std::io::Write;
 pub use tick::{COMMAND_DELAY_MS, MIN_RETRY_DELAY_MS};
@@ -33,7 +36,7 @@ pub struct TestRunOutput {
 }
 
 pub struct TestExecutor {
-    bot: TestBot,
+    pub bot: TestBot,
     action_delay_ms: u64,
     recorder: Option<recorder::RecorderState>,
     verbose: bool,
@@ -83,14 +86,13 @@ impl TestExecutor {
         self.fail_fast = fail_fast;
     }
 
-    /// Enable JSONL event emission. The writer is opened lazily once the
-    /// world offset for the (single) test is known.
+    /// Enable JSONL event emission.
     pub fn set_events_path(&mut self, path: std::path::PathBuf) {
         self.events_path = Some(path);
     }
 
-    pub async fn connect(&mut self, server: &str) -> Result<()> {
-        self.bot.connect(server).await
+    pub fn connect(&mut self, server: &str) -> Result<()> {
+        self.bot.connect(server)
     }
 
     /// Helper to get a mutable reference to the recorder, or return an error
@@ -99,27 +101,30 @@ impl TestExecutor {
     }
 
     /// Helper to apply the standard command delay
-    async fn delay(&self) {
-        tokio::time::sleep(tokio::time::Duration::from_millis(self.action_delay_ms)).await;
+    fn delay(&self) {
+        std::thread::sleep(std::time::Duration::from_millis(self.action_delay_ms));
+    }
+
+    /// Helper to apply offset to a position
+    fn apply_offset(&self, pos: [i32; 3], offset: [i32; 3]) -> [i32; 3] {
+        [pos[0] + offset[0], pos[1] + offset[1], pos[2] + offset[2]]
     }
 
     /// Interactive mode: listen for chat commands and execute them
-    pub async fn interactive_mode(&mut self, test_loader: &mut TestLoader) -> Result<()> {
+    pub fn interactive_mode(&mut self, test_loader: &mut TestLoader) -> Result<()> {
         // Interactive mode always uses verbose output
         self.verbose = true;
 
         // Send help message to chat (without ! to avoid self-triggering)
-        self.bot
-            .send_command("say FlintMC Interactive Mode active")
-            .await?;
-        tokio::time::sleep(tokio::time::Duration::from_millis(COMMAND_DELAY_MS)).await;
-        self.bot.send_command("say Type: help, search, run, run-all, run-tags, list, reload, stop (prefix with !)").await?;
-        tokio::time::sleep(tokio::time::Duration::from_millis(COMMAND_DELAY_MS)).await;
+        self.bot.send_command("say FlintMC Interactive Mode active")?;
+        std::thread::sleep(std::time::Duration::from_millis(COMMAND_DELAY_MS));
+        self.bot.send_command("say Type: help, search, run, run-all, run-tags, list, reload, stop (prefix with !)")?;
+        std::thread::sleep(std::time::Duration::from_millis(COMMAND_DELAY_MS));
 
-        // Drain any messages (including our own welcome messages)
-        tick::drain_chat_messages(&mut self.bot).await;
+        // Drain any messages
+        tick::drain_chat_messages(&mut self.bot);
 
-        // Collect all tests upfront (mutable to allow reload)
+        // Collect all tests upfront
         let mut all_test_files = test_loader.collect_all_test_files()?;
 
         loop {
@@ -127,7 +132,6 @@ impl TestExecutor {
             if let Some((sender, message)) = self
                 .bot
                 .recv_chat_timeout(std::time::Duration::from_millis(tick::CHAT_POLL_TIMEOUT_MS))
-                .await
             {
                 let Some((command, args)) = handlers::parse_command(&message) else {
                     continue;
@@ -135,29 +139,25 @@ impl TestExecutor {
 
                 match command.as_str() {
                     "!help" => {
-                        self.handle_help().await?;
+                        self.handle_help()?;
                     }
 
                     "!list" => {
-                        self.handle_list(&all_test_files).await?;
+                        self.handle_list(&all_test_files)?;
                     }
 
                     "!search" => {
                         if args.is_empty() {
-                            self.bot
-                                .send_command("say Usage: !search <pattern>")
-                                .await?;
+                            self.bot.send_command("say Usage: !search <pattern>")?;
                             continue;
                         }
                         let pattern = args.join(" ");
-                        self.handle_search(&all_test_files, &pattern).await?;
+                        self.handle_search(&all_test_files, &pattern)?;
                     }
 
                     "!run" => {
                         if args.is_empty() {
-                            self.bot
-                                .send_command("say Usage: !run <test_name> [step]")
-                                .await?;
+                            self.bot.send_command("say Usage: !run <test_name> [step]")?;
                             continue;
                         }
 
@@ -169,73 +169,56 @@ impl TestExecutor {
                                 (args.join(" "), false)
                             };
 
-                        self.handle_run(&all_test_files, &test_name, step_mode)
-                            .await?;
+                        self.handle_run(&all_test_files, &test_name, step_mode)?;
                     }
 
                     "!run-all" => {
-                        self.handle_run_all(&all_test_files).await?;
+                        self.handle_run_all(&all_test_files)?;
                     }
 
                     "!run-tags" => {
                         if args.is_empty() {
-                            self.bot
-                                .send_command("say Usage: !run-tags <tag1,tag2,...>")
-                                .await?;
+                            self.bot.send_command("say Usage: !run-tags <tag1,tag2,...>")?;
                             continue;
                         }
                         let tags: Vec<String> =
                             args[0].split(',').map(|s| s.trim().to_string()).collect();
-                        self.handle_run_tags(test_loader, &tags).await?;
+                        self.handle_run_tags(test_loader, &tags)?;
                     }
 
                     "!stop" => {
-                        self.bot
-                            .send_command("say Exiting interactive mode. Goodbye!")
-                            .await?;
+                        self.bot.send_command("say Exiting interactive mode. Goodbye!")?;
                         return Ok(());
                     }
 
                     "!reload" => {
                         test_loader.verify_and_rebuild_index()?;
                         all_test_files = test_loader.collect_all_test_files()?;
-                        self.bot
-                            .send_command(&format!("say Reloaded {} tests", all_test_files.len()))
-                            .await?;
+                        self.bot.send_command(&format!("say Reloaded {} tests", all_test_files.len()))?;
                     }
 
                     // Recorder commands
                     "!record" => {
                         if args.is_empty() {
-                            self.bot
-                                .send_command("say Usage: !record <test_name> [player_name]")
-                                .await?;
-                            self.bot
-                                .send_command(
-                                    "say Example: !record my_test or !record fence/fence_connect",
-                                )
-                                .await?;
+                            self.bot.send_command("say Usage: !record <test_name> [player_name]")?;
+                            self.bot.send_command("say Example: !record my_test or !record fence/fence_connect")?;
                             continue;
                         }
                         let test_name = args[0].clone();
-                        // If player name not provided, use sender if available
                         let player_name = args.get(1).cloned().or_else(|| sender.clone());
-                        self.handle_record_start(&test_name, test_loader, player_name)
-                            .await?;
+                        self.handle_record_start(&test_name, test_loader, player_name)?;
                     }
                     "!assert_changes" => {
-                        self.handle_record_assert_changes().await?;
+                        self.handle_record_assert_changes()?;
                     }
 
                     "!tick" | "!next" => {
-                        self.handle_record_tick().await?;
+                        self.handle_record_tick()?;
                     }
 
                     "!pos1" | "!pos" => {
                         if (!args.is_empty() && args.len() < 3) || args.len() > 3 {
-                            self.bot
-                                .send_command("say Usage: !assert <x> <y> <z>")
-                                .await?;
+                            self.bot.send_command("say Usage: !assert <x> <y> <z>")?;
                             continue;
                         }
                         self.handle_pos1(&args);
@@ -243,40 +226,32 @@ impl TestExecutor {
 
                     "!assert" => {
                         if args.len() < 3 {
-                            self.bot
-                                .send_command("say Usage: !assert <x> <y> <z>")
-                                .await?;
+                            self.bot.send_command("say Usage: !assert <x> <y> <z>")?;
                             continue;
                         }
                         self.last_assert_pos = args.clone();
-                        self.handle_record_assert(&args).await?;
+                        self.handle_record_assert(&args)?;
                     }
                     "!sprint" => {
                         if args.len() != 1 {
-                            self.bot.send_command("say Usage: !sprint <ticks>").await?;
-                            self.bot
-                                .send_command(
-                                    "say: please be assert before a start state of a block/region",
-                                )
-                                .await?;
+                            self.bot.send_command("say Usage: !sprint <ticks>")?;
+                            self.bot.send_command("say: please be assert before a start state of a block/region")?;
                             continue;
                         }
                         let ticks = args[0].parse::<u32>().unwrap_or(1);
                         if ticks == 0 {
-                            self.bot
-                                .send_command("say Sprint ticks must be greater than 0")
-                                .await?;
+                            self.bot.send_command("say Sprint ticks must be greater than 0")?;
                             continue;
                         }
                         if self.last_assert_pos.is_empty() {
-                            self.bot.send_command("say Please assert a position first, which should be used for each string (can be also a 3d area)").await?;
+                            self.bot.send_command("say Please assert a position first, which should be used for each string (can be also a 3d area)")?;
                             continue;
                         }
-                        self.handle_record_sprint(ticks).await?;
+                        self.handle_record_sprint(ticks)?;
                     }
 
                     "!save" => {
-                        if self.handle_record_save().await? {
+                        if self.handle_record_save()? {
                             // Reload tests after successful save
                             test_loader.verify_and_rebuild_index()?;
                             all_test_files = test_loader.collect_all_test_files()?;
@@ -284,17 +259,12 @@ impl TestExecutor {
                     }
 
                     "!cancel" => {
-                        self.handle_record_cancel().await?;
+                        self.handle_record_cancel()?;
                     }
 
                     _ => {
                         if command.starts_with('!') {
-                            self.bot
-                                .send_command(&format!(
-                                    "say Unknown command: {}. Type !help for commands.",
-                                    command
-                                ))
-                                .await?;
+                            self.bot.send_command(&format!("say Unknown command: {}. Type !help for commands.", command))?;
                         }
                     }
                 }
@@ -303,7 +273,7 @@ impl TestExecutor {
     }
 
     /// Scan blocks in a cube around a center point (ignores air)
-    async fn scan_blocks_around(
+    fn scan_blocks_around(
         &self,
         center: [i32; 3],
         radius: i32,
@@ -314,9 +284,8 @@ impl TestExecutor {
             for y in (center[1] - radius).max(-64)..=(center[1] + radius).min(319) {
                 for z in (center[2] - radius)..=(center[2] + radius) {
                     let pos = [x, y, z];
-                    if let Ok(Some(block)) = self.bot.get_block(pos).await {
+                    if let Ok(Some(block)) = self.bot.get_block(pos) {
                         let block_id = block::extract_block_id(&block);
-                        // Ignore air blocks
                         if !block_id.to_lowercase().contains("air") {
                             blocks.insert(pos, block_id);
                         }
@@ -329,8 +298,7 @@ impl TestExecutor {
     }
 
     /// Scan blocks within an AABB (inclusive bounds, in world coordinates).
-    /// Air is omitted; clamped to vanilla world height limits.
-    async fn scan_region(
+    fn scan_region(
         &self,
         min: [i32; 3],
         max: [i32; 3],
@@ -340,7 +308,7 @@ impl TestExecutor {
             for y in min[1].max(-64)..=max[1].min(319) {
                 for z in min[2]..=max[2] {
                     let pos = [x, y, z];
-                    if let Ok(Some(block)) = self.bot.get_block(pos).await {
+                    if let Ok(Some(block)) = self.bot.get_block(pos) {
                         let block_id = block::extract_block_id(&block);
                         if !block_id.to_lowercase().contains("air") {
                             blocks.insert(pos, block_id);
@@ -353,7 +321,7 @@ impl TestExecutor {
     }
 
     /// Run tests in parallel with merged timeline
-    pub async fn run_tests_parallel(
+    pub fn run_tests_parallel(
         &mut self,
         tests_with_offsets: &[(TestSpec, [i32; 3])],
         break_after_setup: bool,
@@ -368,8 +336,7 @@ impl TestExecutor {
             );
         }
 
-        // Open the events writer if --emit-events was passed. Single-test only;
-        // parallel-grid runs would interleave coordinates from multiple tests.
+        // Open the events writer if --emit-events was passed.
         if let Some(events_path) = self.events_path.clone() {
             if tests_with_offsets.len() != 1 {
                 anyhow::bail!(
@@ -411,19 +378,19 @@ impl TestExecutor {
         }
         for (test, offset) in tests_with_offsets.iter() {
             let region = test.cleanup_region();
-            let world_min = actions::apply_offset(region[0], *offset);
-            let world_max = actions::apply_offset(region[1], *offset);
+            let world_min = self.apply_offset(region[0], *offset);
+            let world_max = self.apply_offset(region[1], *offset);
             let cmd = format!(
                 "fill {} {} {} {} {} {} air",
                 world_min[0], world_min[1], world_min[2], world_max[0], world_max[1], world_max[2]
             );
-            self.bot.send_command(&cmd).await?;
+            self.bot.send_command(&cmd)?;
         }
-        tokio::time::sleep(tokio::time::Duration::from_millis(CLEANUP_DELAY_MS)).await;
+        std::thread::sleep(std::time::Duration::from_millis(CLEANUP_DELAY_MS));
 
         // Freeze time globally
-        self.bot.send_command("tick freeze").await?;
-        tokio::time::sleep(tokio::time::Duration::from_millis(COMMAND_DELAY_MS)).await;
+        self.bot.send_command("tick freeze")?;
+        std::thread::sleep(std::time::Duration::from_millis(COMMAND_DELAY_MS));
 
         // Break after setup if requested
         let mut stepping_mode = false;
@@ -431,19 +398,16 @@ impl TestExecutor {
             let should_continue = tick::wait_for_step(
                 &mut self.bot,
                 "After test setup (cleanup complete, time frozen)",
-            )
-            .await?;
+            )?;
             stepping_mode = !should_continue;
         }
 
         // Emit `run_started` and pre-compute the scan AABB in world coords.
-        // We pass world coords to the writer; it subtracts the offset so the
-        // emitted event is in test-local space.
         let scan_bounds: Option<([i32; 3], [i32; 3])> = if self.events.is_some() {
             let (test, offset) = &tests_with_offsets[0];
             let region = test.cleanup_region();
-            let world_min = actions::apply_offset(region[0], *offset);
-            let world_max = actions::apply_offset(region[1], *offset);
+            let world_min = self.apply_offset(region[0], *offset);
+            let world_max = self.apply_offset(region[1], *offset);
             if let Some(events) = self.events.as_mut() {
                 events.run_started(&test.name, [world_min, world_max])?;
             }
@@ -473,16 +437,30 @@ impl TestExecutor {
         let show_progress = !verbose && !self.quiet;
         let fail_fast = self.fail_fast;
 
+        // Initialize per-test worlds and players using the trait model
+        let mut worlds: Vec<MinecraftWorld> = tests_with_offsets
+            .iter()
+            .map(|(_test, offset)| MinecraftWorld {
+                bot: self.bot.clone(),
+                offset: *offset,
+                current_tick: 0,
+            })
+            .collect();
+
+        let mut players: Vec<Option<Box<dyn FlintPlayer>>> =
+            (0..tests_with_offsets.len()).map(|_| None).collect();
+
         // Execute merged timeline
         let mut current_tick = 0;
         while current_tick <= aggregate.max_tick {
             if let Some(entries) = aggregate.timeline.get(&current_tick) {
                 for (test_idx, entry, value_idx) in entries {
-                    let (test, offset) = &tests_with_offsets[*test_idx];
+                    let (test, _) = &tests_with_offsets[*test_idx];
+                    let world = &mut worlds[*test_idx];
+                    let player = &mut players[*test_idx];
 
                     match self
-                        .execute_action(current_tick, entry, *value_idx, *offset)
-                        .await
+                        .execute_action(world, player, current_tick, entry, *value_idx)
                     {
                         Ok(ActionOutcome::AssertPassed) => {
                             test_results[*test_idx].0 += 1;
@@ -579,8 +557,8 @@ impl TestExecutor {
                         );
                     }
                     let region = test.cleanup_region();
-                    let world_min = actions::apply_offset(region[0], *offset);
-                    let world_max = actions::apply_offset(region[1], *offset);
+                    let world_min = self.apply_offset(region[0], *offset);
+                    let world_max = self.apply_offset(region[1], *offset);
                     let cmd = format!(
                         "fill {} {} {} {} {} {} air",
                         world_min[0],
@@ -590,9 +568,9 @@ impl TestExecutor {
                         world_max[1],
                         world_max[2]
                     );
-                    self.bot.send_command(&cmd).await?;
+                    self.bot.send_command(&cmd)?;
                     tests_cleaned[test_idx] = true;
-                    tokio::time::sleep(tokio::time::Duration::from_millis(COMMAND_DELAY_MS)).await;
+                    std::thread::sleep(std::time::Duration::from_millis(COMMAND_DELAY_MS));
                 }
             }
 
@@ -601,26 +579,23 @@ impl TestExecutor {
                 let should_continue = tick::wait_for_step(
                     &mut self.bot,
                     &format!("End of tick {} (before step to next tick)", current_tick),
-                )
-                .await?;
+                )?;
                 stepping_mode = !should_continue;
             }
 
-            // Advance to next tick. With event emission enabled we force
-            // single-step mode so we can scan and diff after every tick —
-            // sprint elides intermediate states the visualizer needs.
+            // Advance to next tick.
             if let Some((scan_min, scan_max)) = scan_bounds {
-                tick::step_tick(&mut self.bot, verbose).await?;
-                tokio::time::sleep(tokio::time::Duration::from_millis(CLEANUP_DELAY_MS)).await;
-                let world_blocks = self.scan_region(scan_min, scan_max).await?;
+                tick::step_tick(&mut self.bot, verbose)?;
+                std::thread::sleep(std::time::Duration::from_millis(CLEANUP_DELAY_MS));
+                let world_blocks = self.scan_region(scan_min, scan_max)?;
                 if let Some(events) = self.events.as_mut() {
                     events.emit_tick(current_tick, world_blocks)?;
                 }
                 current_tick += 1;
             } else if current_tick < aggregate.max_tick {
                 if stepping_mode {
-                    tick::step_tick(&mut self.bot, verbose).await?;
-                    tokio::time::sleep(tokio::time::Duration::from_millis(CLEANUP_DELAY_MS)).await;
+                    tick::step_tick(&mut self.bot, verbose)?;
+                    std::thread::sleep(std::time::Duration::from_millis(CLEANUP_DELAY_MS));
                     current_tick += 1;
                 } else {
                     let next_event_tick = aggregate
@@ -634,20 +609,25 @@ impl TestExecutor {
                     };
 
                     let sprint_time_ms = if ticks_to_sprint == 1 {
-                        tick::step_tick(&mut self.bot, verbose).await?
+                        tick::step_tick(&mut self.bot, verbose)?
                     } else if ticks_to_sprint > 1 {
-                        tick::sprint_ticks(&mut self.bot, ticks_to_sprint, verbose).await?
+                        tick::sprint_ticks(&mut self.bot, ticks_to_sprint, verbose)?
                     } else {
                         0
                     };
 
                     let retry_delay = sprint_time_ms.max(MIN_RETRY_DELAY_MS);
-                    tokio::time::sleep(tokio::time::Duration::from_millis(retry_delay)).await;
+                    std::thread::sleep(std::time::Duration::from_millis(retry_delay));
 
                     current_tick += ticks_to_sprint;
                 }
             } else {
                 current_tick += 1;
+            }
+
+            // Update tick counts in the FlintWorld adapter instances
+            for world in &mut worlds {
+                world.current_tick = current_tick as u64;
             }
 
             // Update progress bar in non-verbose mode
@@ -661,8 +641,7 @@ impl TestExecutor {
             println!();
         }
 
-        // Emit run_completed (totals are summed across tests, but event mode
-        // is gated to a single test so this collapses to its results).
+        // Emit run_completed
         if let Some(events) = self.events.as_mut() {
             let asserts_passed: u32 = test_results.iter().map(|(p, _)| *p as u32).sum();
             let asserts_failed: u32 = test_results.iter().map(|(_, f)| *f as u32).sum();
@@ -670,7 +649,7 @@ impl TestExecutor {
         }
 
         // Unfreeze time
-        self.bot.send_command("tick unfreeze").await?;
+        self.bot.send_command("tick unfreeze")?;
 
         // Clean up remaining tests
         for test_idx in 0..tests_with_offsets.len() {
@@ -684,8 +663,8 @@ impl TestExecutor {
                     );
                 }
                 let region = test.cleanup_region();
-                let world_min = actions::apply_offset(region[0], *offset);
-                let world_max = actions::apply_offset(region[1], *offset);
+                let world_min = self.apply_offset(region[0], *offset);
+                let world_max = self.apply_offset(region[1], *offset);
                 let cmd = format!(
                     "fill {} {} {} {} {} {} air",
                     world_min[0],
@@ -695,9 +674,9 @@ impl TestExecutor {
                     world_max[1],
                     world_max[2]
                 );
-                self.bot.send_command(&cmd).await?;
+                self.bot.send_command(&cmd)?;
                 tests_cleaned[test_idx] = true;
-                tokio::time::sleep(tokio::time::Duration::from_millis(COMMAND_DELAY_MS)).await;
+                std::thread::sleep(std::time::Duration::from_millis(COMMAND_DELAY_MS));
             }
         }
 
@@ -747,18 +726,18 @@ impl TestExecutor {
             results.len(),
             total_failed
         );
-        self.bot.send_command(&format!("say {}", summary)).await?;
-        tokio::time::sleep(tokio::time::Duration::from_millis(COMMAND_DELAY_MS)).await;
+        self.bot.send_command(&format!("say {}", summary))?;
+        std::thread::sleep(std::time::Duration::from_millis(COMMAND_DELAY_MS));
 
         // Send individual test results to chat
         for result in &results {
             let status = if result.success { "PASS" } else { "FAIL" };
             let msg = format!("say [{}] {}", status, result.test_name);
-            self.bot.send_command(&msg).await?;
-            tokio::time::sleep(tokio::time::Duration::from_millis(TEST_RESULT_DELAY_MS)).await;
+            self.bot.send_command(&msg)?;
+            std::thread::sleep(std::time::Duration::from_millis(TEST_RESULT_DELAY_MS));
         }
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(CLEANUP_DELAY_MS)).await;
+        std::thread::sleep(std::time::Duration::from_millis(CLEANUP_DELAY_MS));
 
         // Collect failure details
         let failures: Vec<(String, AssertFailure)> = tests_with_offsets
@@ -774,23 +753,23 @@ impl TestExecutor {
         Ok(TestRunOutput { results, failures })
     }
 
-    async fn execute_action(
+    fn execute_action(
         &mut self,
+        world: &mut MinecraftWorld,
+        player: &mut Option<Box<dyn FlintPlayer>>,
         tick: u32,
         entry: &TimelineEntry,
         value_idx: usize,
-        offset: [i32; 3],
     ) -> Result<ActionOutcome> {
         actions::execute_action(
-            &mut self.bot,
+            world,
+            player,
             tick,
             entry,
             value_idx,
-            offset,
             self.action_delay_ms,
             self.verbose,
         )
-        .await
     }
 }
 
@@ -819,7 +798,7 @@ pub fn format_number(n: u32) -> String {
     let s = n.to_string();
     let mut result = String::with_capacity(s.len() + s.len() / 3);
     for (i, c) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i).is_multiple_of(3) {
+        if i > 0 && (s.len() - i) % 3 == 0 {
             result.push(',');
         }
         result.push(c);

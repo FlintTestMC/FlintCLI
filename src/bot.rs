@@ -3,7 +3,6 @@ use azalea::prelude::*;
 use parking_lot::RwLock;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::sync::mpsc;
 
 // Constants for connection and timing
 const INIT_WAIT_ATTEMPTS: u32 = 50;
@@ -15,7 +14,7 @@ const WORLD_SYNC_DELAY_MS: u64 = 500;
 struct State {
     client_handle: Arc<RwLock<Option<Client>>>,
     in_game: Arc<AtomicBool>,
-    chat_tx: Option<mpsc::UnboundedSender<(Option<String>, String)>>,
+    chat_tx: Option<std::sync::mpsc::Sender<(Option<String>, String)>>,
 }
 
 impl Default for State {
@@ -28,11 +27,11 @@ impl Default for State {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct TestBot {
     client: Option<Arc<RwLock<Option<Client>>>>,
     in_game: Option<Arc<AtomicBool>>,
-    chat_rx: Option<mpsc::UnboundedReceiver<(Option<String>, String)>>,
+    chat_rx: Option<Arc<parking_lot::Mutex<std::sync::mpsc::Receiver<(Option<String>, String)>>>>,
 }
 
 impl TestBot {
@@ -48,13 +47,13 @@ impl TestBot {
             .map(|handle| handle.read())
     }
 
-    pub async fn connect(&mut self, server: &str) -> Result<()> {
+    pub fn connect(&mut self, server: &str) -> Result<()> {
         let account = Account::offline("flintmc_testbot");
 
         tracing::info!("Connecting to server: {}", server);
 
         // Create chat channel
-        let (chat_tx, chat_rx) = mpsc::unbounded_channel();
+        let (chat_tx, chat_rx) = std::sync::mpsc::channel();
 
         let state = State {
             chat_tx: Some(chat_tx),
@@ -118,7 +117,7 @@ impl TestBot {
 
         // Wait for client to initialize
         for _ in 0..INIT_WAIT_ATTEMPTS {
-            tokio::time::sleep(tokio::time::Duration::from_millis(INIT_WAIT_DELAY_MS)).await;
+            std::thread::sleep(std::time::Duration::from_millis(INIT_WAIT_DELAY_MS));
             if client_handle.read().is_some() {
                 break;
             }
@@ -131,7 +130,7 @@ impl TestBot {
         // Wait for bot to be in game state
         tracing::info!("Waiting for bot to enter game state...");
         for _ in 0..GAME_STATE_WAIT_ATTEMPTS {
-            tokio::time::sleep(tokio::time::Duration::from_millis(INIT_WAIT_DELAY_MS)).await;
+            std::thread::sleep(std::time::Duration::from_millis(INIT_WAIT_DELAY_MS));
             if in_game.load(Ordering::SeqCst) {
                 break;
             }
@@ -143,31 +142,29 @@ impl TestBot {
 
         self.client = Some(client_handle);
         self.in_game = Some(in_game);
-        self.chat_rx = Some(chat_rx);
+        self.chat_rx = Some(Arc::new(parking_lot::Mutex::new(chat_rx)));
         tracing::info!("Connected successfully and in game state");
 
         // Give a small amount of extra time for world data to sync
-        tokio::time::sleep(tokio::time::Duration::from_millis(WORLD_SYNC_DELAY_MS)).await;
+        std::thread::sleep(std::time::Duration::from_millis(WORLD_SYNC_DELAY_MS));
 
         Ok(())
     }
 
     /// Wait for a chat message with timeout
-    pub async fn recv_chat_timeout(
-        &mut self,
+    pub fn recv_chat_timeout(
+        &self,
         timeout: std::time::Duration,
     ) -> Option<(Option<String>, String)> {
-        if let Some(ref mut rx) = self.chat_rx {
-            tokio::time::timeout(timeout, rx.recv())
-                .await
-                .ok()
-                .flatten()
+        if let Some(ref rx_mutex) = self.chat_rx {
+            let rx = rx_mutex.lock();
+            rx.recv_timeout(timeout).ok()
         } else {
             None
         }
     }
 
-    pub async fn send_command(&self, command: &str) -> Result<()> {
+    pub fn send_command(&self, command: &str) -> Result<()> {
         let client_guard = self.get_client()?;
         let client = client_guard
             .as_ref()
@@ -184,7 +181,7 @@ impl TestBot {
         Ok(())
     }
 
-    pub async fn get_block(&self, pos: [i32; 3]) -> Result<Option<String>> {
+    pub fn get_block(&self, pos: [i32; 3]) -> Result<Option<String>> {
         let client_guard = self.get_client()?;
         let client = client_guard
             .as_ref()

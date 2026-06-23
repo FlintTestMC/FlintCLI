@@ -125,8 +125,7 @@ struct Args {
     emit_events: Option<PathBuf>,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     // Setup logging
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
@@ -330,17 +329,17 @@ async fn main() -> Result<()> {
         println!("  During tests: type 's' to step, 'c' to continue\n");
 
         println!("{} Connecting to {}...", "→".blue(), server);
-        executor.connect(server).await?;
+        executor.connect(server)?;
         println!("{} Connected successfully\n", "✓".green());
 
-        executor.interactive_mode(&mut test_loader).await?;
+        executor.interactive_mode(&mut test_loader)?;
         return Ok(());
     }
 
     if verbose {
         println!("{} Connecting to {}...", "→".blue(), server);
     }
-    executor.connect(server).await?;
+    executor.connect(server)?;
     if verbose {
         println!("{} Connected successfully\n", "✓".green());
     }
@@ -409,10 +408,8 @@ async fn main() -> Result<()> {
             println!();
         }
 
-        // Run this chunk of tests in parallel using merged timeline
         let output = executor
-            .run_tests_parallel(&tests_with_offsets, args.break_after_setup)
-            .await?;
+            .run_tests_parallel(&tests_with_offsets, args.break_after_setup)?;
 
         all_results.extend(output.results);
         all_failures.extend(output.failures);

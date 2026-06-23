@@ -37,51 +37,40 @@ pub fn parse_command(message: &str) -> Option<(String, Vec<String>)> {
 impl TestExecutor {
     // Command handlers
 
-    pub(super) async fn handle_help(&mut self) -> Result<()> {
-        self.bot.send_command("say Commands:").await?;
+    pub(super) fn handle_help(&mut self) -> Result<()> {
+        self.bot.send_command("say Commands:")?;
         self.bot
-            .send_command("say !search <pattern> - Search tests by name")
-            .await?;
+            .send_command("say !search <pattern> - Search tests by name")?;
         self.bot
-            .send_command("say !run <test_name> [step] - Run a specific test")
-            .await?;
+            .send_command("say !run <test_name> [step] - Run a specific test")?;
         self.bot
-            .send_command("say !run-all - Run all tests")
-            .await?;
+            .send_command("say !run-all - Run all tests")?;
         self.bot
-            .send_command("say !run-tags <tag1,tag2> - Run tests with tags")
-            .await?;
-        self.bot.send_command("say !list - List all tests").await?;
+            .send_command("say !run-tags <tag1,tag2> - Run tests with tags")?;
+        self.bot.send_command("say !list - List all tests")?;
         self.bot
-            .send_command("say !reload - Reload test files")
-            .await?;
+            .send_command("say !reload - Reload test files")?;
         self.bot
-            .send_command("say Recorder: !record <name>, !tick/!next, !save, !cancel")
-            .await?;
+            .send_command("say Recorder: !record <name>, !tick/!next, !save, !cancel")?;
         self.bot
-            .send_command("say Recorder actions: !assert <x> <y> <z>, !assert_changes")
-            .await?;
+            .send_command("say Recorder actions: !assert <x> <y> <z>, !assert_changes")?;
         self.bot
             .send_command(
                 "say Recorder actions: !pos1 <x> <y> <z>, !pos - Allow to use assert for a 3d area",
-            )
-            .await?;
+            )?;
         self.bot
-            .send_command("say Recorder actions: !sprint <tick> - ticks this ticks and asserts after each tick")
-            .await?;
+            .send_command("say Recorder actions: !sprint <tick> - ticks this ticks and asserts after each tick")?;
         self.bot
-            .send_command("say !stop - Exit interactive mode")
-            .await?;
+            .send_command("say !stop - Exit interactive mode")?;
         Ok(())
     }
 
-    pub(super) async fn handle_list(
+    pub(super) fn handle_list(
         &mut self,
         all_test_files: &[std::path::PathBuf],
     ) -> Result<()> {
         self.bot
-            .send_command(&format!("say Found {} tests:", all_test_files.len()))
-            .await?;
+            .send_command(&format!("say Found {} tests:", all_test_files.len()))?;
         for test_file in all_test_files {
             if let Ok(test) = TestSpec::from_file(test_file, false) {
                 let tags = if test.tags.is_empty() {
@@ -90,15 +79,14 @@ impl TestExecutor {
                     format!(" [{}]", test.tags.join(", "))
                 };
                 self.bot
-                    .send_command(&format!("say - {}{}", test.name, tags))
-                    .await?;
-                tokio::time::sleep(tokio::time::Duration::from_millis(TEST_RESULT_DELAY_MS)).await;
+                    .send_command(&format!("say - {}{}", test.name, tags))?;
+                std::thread::sleep(std::time::Duration::from_millis(TEST_RESULT_DELAY_MS));
             }
         }
         Ok(())
     }
 
-    pub(super) async fn handle_search(
+    pub(super) fn handle_search(
         &mut self,
         all_test_files: &[std::path::PathBuf],
         pattern: &str,
@@ -106,34 +94,31 @@ impl TestExecutor {
         let pattern_lower = pattern.to_lowercase();
         let mut found = 0;
         for test_file in all_test_files {
-            if let Ok(test) = TestSpec::from_file(test_file, false)
-                && test.name.to_lowercase().contains(&pattern_lower)
-            {
-                let tags = if test.tags.is_empty() {
-                    String::new()
-                } else {
-                    format!(" [{}]", test.tags.join(", "))
-                };
-                self.bot
-                    .send_command(&format!("say - {}{}", test.name, tags))
-                    .await?;
-                found += 1;
-                tokio::time::sleep(tokio::time::Duration::from_millis(TEST_RESULT_DELAY_MS)).await;
+            if let Ok(test) = TestSpec::from_file(test_file, false) {
+                if test.name.to_lowercase().contains(&pattern_lower) {
+                    let tags = if test.tags.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" [{}]", test.tags.join(", "))
+                    };
+                    self.bot
+                        .send_command(&format!("say - {}{}", test.name, tags))?;
+                    found += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(TEST_RESULT_DELAY_MS));
+                }
             }
         }
         if found == 0 {
             self.bot
-                .send_command(&format!("say No tests matching '{}'", pattern))
-                .await?;
+                .send_command(&format!("say No tests matching '{}'", pattern))?;
         } else {
             self.bot
-                .send_command(&format!("say Found {} matching tests", found))
-                .await?;
+                .send_command(&format!("say Found {} matching tests", found))?;
         }
         Ok(())
     }
 
-    pub(super) async fn handle_run(
+    pub(super) fn handle_run(
         &mut self,
         all_test_files: &[std::path::PathBuf],
         test_name: &str,
@@ -144,22 +129,22 @@ impl TestExecutor {
         // First pass: look for exact match
         let mut found_test = None;
         for test_file in all_test_files {
-            if let Ok(test) = TestSpec::from_file(test_file, false)
-                && test.name.to_lowercase() == name_lower
-            {
-                found_test = Some(test);
-                break;
+            if let Ok(test) = TestSpec::from_file(test_file, false) {
+                if test.name.to_lowercase() == name_lower {
+                    found_test = Some(test);
+                    break;
+                }
             }
         }
 
         // Second pass: fall back to partial match if no exact match
         if found_test.is_none() {
             for test_file in all_test_files {
-                if let Ok(test) = TestSpec::from_file(test_file, false)
-                    && test.name.to_lowercase().contains(&name_lower)
-                {
-                    found_test = Some(test);
-                    break;
+                if let Ok(test) = TestSpec::from_file(test_file, false) {
+                    if test.name.to_lowercase().contains(&name_lower) {
+                        found_test = Some(test);
+                        break;
+                    }
                 }
             }
         }
@@ -170,35 +155,29 @@ impl TestExecutor {
                     .send_command(&format!(
                         "say Running test: {} (step mode - type 's' or 'c')",
                         test.name
-                    ))
-                    .await?;
+                    ))?;
             } else {
                 self.bot
-                    .send_command(&format!("say Running test: {}", test.name))
-                    .await?;
+                    .send_command(&format!("say Running test: {}", test.name))?;
             }
 
             let offset = calculate_test_offset_default(0, 1);
             let tests_with_offsets = vec![(test, offset)];
-            let output = self
-                .run_tests_parallel(&tests_with_offsets, step_mode)
-                .await?;
+            let output = self.run_tests_parallel(&tests_with_offsets, step_mode)?;
 
             for result in &output.results {
                 let status = if result.success { "PASS" } else { "FAIL" };
                 self.bot
-                    .send_command(&format!("say [{}] {}", status, result.test_name))
-                    .await?;
+                    .send_command(&format!("say [{}] {}", status, result.test_name))?;
             }
         } else {
             self.bot
-                .send_command(&format!("say Test '{}' not found", test_name))
-                .await?;
+                .send_command(&format!("say Test '{}' not found", test_name))?;
         }
         Ok(())
     }
 
-    pub(super) async fn handle_run_all(
+    pub(super) fn handle_run_all(
         &mut self,
         all_test_files: &[std::path::PathBuf],
     ) -> Result<()> {
@@ -206,8 +185,7 @@ impl TestExecutor {
             .send_command(&format!(
                 "say Running all {} tests...",
                 all_test_files.len()
-            ))
-            .await?;
+            ))?;
 
         let mut tests_with_offsets = Vec::new();
         for (idx, test_file) in all_test_files.iter().enumerate() {
@@ -217,7 +195,7 @@ impl TestExecutor {
             }
         }
 
-        let output = self.run_tests_parallel(&tests_with_offsets, false).await?;
+        let output = self.run_tests_parallel(&tests_with_offsets, false)?;
 
         let passed = output.results.iter().filter(|r| r.success).count();
         let failed = output.results.len() - passed;
@@ -225,12 +203,11 @@ impl TestExecutor {
             .send_command(&format!(
                 "say Results: {} passed, {} failed",
                 passed, failed
-            ))
-            .await?;
+            ))?;
         Ok(())
     }
 
-    pub(super) async fn handle_run_tags(
+    pub(super) fn handle_run_tags(
         &mut self,
         test_loader: &TestLoader,
         tags: &[String],
@@ -239,8 +216,7 @@ impl TestExecutor {
 
         if test_files.is_empty() {
             self.bot
-                .send_command(&format!("say No tests found with tags: {:?}", tags))
-                .await?;
+                .send_command(&format!("say No tests found with tags: {:?}", tags))?;
             return Ok(());
         }
 
@@ -249,8 +225,7 @@ impl TestExecutor {
                 "say Running {} tests with tags {:?}...",
                 test_files.len(),
                 tags
-            ))
-            .await?;
+            ))?;
 
         let mut tests_with_offsets = Vec::new();
         for (idx, test_file) in test_files.iter().enumerate() {
@@ -260,7 +235,7 @@ impl TestExecutor {
             }
         }
 
-        let output = self.run_tests_parallel(&tests_with_offsets, false).await?;
+        let output = self.run_tests_parallel(&tests_with_offsets, false)?;
 
         let passed = output.results.iter().filter(|r| r.success).count();
         let failed = output.results.len() - passed;
@@ -268,14 +243,13 @@ impl TestExecutor {
             .send_command(&format!(
                 "say Results: {} passed, {} failed",
                 passed, failed
-            ))
-            .await?;
+            ))?;
         Ok(())
     }
 
     // Recorder command handlers
 
-    pub(super) async fn handle_record_start(
+    pub(super) fn handle_record_start(
         &mut self,
         test_name: &str,
         _test_loader: &TestLoader,
@@ -283,8 +257,7 @@ impl TestExecutor {
     ) -> Result<()> {
         if self.recorder.is_some() {
             self.bot
-                .send_command("say Recording already in progress. Use !save or !cancel first.")
-                .await?;
+                .send_command("say Recording already in progress. Use !save or !cancel first.")?;
             return Ok(());
         }
 
@@ -298,8 +271,7 @@ impl TestExecutor {
             Ok(pos) => pos,
             Err(_) => {
                 self.bot
-                    .send_command("say Warning: Could not get bot position, using spawn")
-                    .await?;
+                    .send_command("say Warning: Could not get bot position, using spawn")?;
                 [0, 64, 0]
             }
         };
@@ -308,49 +280,43 @@ impl TestExecutor {
         recorder_state.scan_radius = 10; // 10 block radius for scanning
 
         // Take initial snapshot of blocks
-        let initial_blocks = self
-            .scan_blocks_around(scan_center, recorder_state.scan_radius)
-            .await?;
+        let initial_blocks = self.scan_blocks_around(scan_center, recorder_state.scan_radius)?;
         recorder_state.snapshot = initial_blocks;
 
         self.recorder = Some(recorder_state);
 
         // Freeze time for controlled recording
-        self.bot.send_command("tick freeze").await?;
-        tokio::time::sleep(tokio::time::Duration::from_millis(COMMAND_DELAY_MS)).await;
+        self.bot.send_command("tick freeze")?;
+        std::thread::sleep(std::time::Duration::from_millis(COMMAND_DELAY_MS));
 
         self.bot
-            .send_command(&format!("say Recording started: {}", test_name))
-            .await?;
+            .send_command(&format!("say Recording started: {}", test_name))?;
         self.bot
-            .send_command("say Time frozen. Block changes will be detected automatically!")
-            .await?;
+            .send_command("say Time frozen. Block changes will be detected automatically!")?;
         self.bot
             .send_command(
                 "say Commands: !assert (add check), !tick (step game tick), !save, !cancel",
-            )
-            .await?;
+            )?;
 
         Ok(())
     }
 
-    pub(super) async fn handle_record_tick(&mut self) -> Result<()> {
+    pub(super) fn handle_record_tick(&mut self) -> Result<()> {
         // Check if recorder exists first
         if self.recorder.is_none() {
             self.bot
-                .send_command("say No recording in progress. Use !record <name> to start.")
-                .await?;
+                .send_command("say No recording in progress. Use !record <name> to start.")?;
             return Ok(());
         }
 
         let current_tick = self.recorder.as_ref().unwrap().current_tick;
 
         // Snapshot before advancing tick to capture all changes
-        self.handle_record_snapshot().await?;
+        self.handle_record_snapshot()?;
 
         // Step the game tick
-        self.bot.send_command("tick step").await?;
-        self.delay().await;
+        self.bot.send_command("tick step")?;
+        self.delay();
 
         // Now advance our recording tick counter
         let recorder = self.require_recorder().unwrap();
@@ -361,11 +327,11 @@ impl TestExecutor {
             .send_command(&format!(
                 "say Stepped game tick, now recording tick {} (was {})",
                 new_tick, current_tick
-            ))
-            .await?;
+            ))?;
 
         Ok(())
     }
+
     pub(super) fn handle_pos1(&mut self, args: &[String]) {
         if args.is_empty() {
             self.pos1 = None;
@@ -377,13 +343,12 @@ impl TestExecutor {
         self.pos1 = Some([x, y, z]);
     }
 
-    pub(super) async fn handle_record_assert(&mut self, args: &[String]) -> Result<()> {
+    pub(super) fn handle_record_assert(&mut self, args: &[String]) -> Result<()> {
         let _recorder = match self.recorder.as_mut() {
             Some(r) => r,
             None => {
                 self.bot
-                    .send_command("say No recording in progress. Use !record <name> to start.")
-                    .await?;
+                    .send_command("say No recording in progress. Use !record <name> to start.")?;
                 return Ok(());
             }
         };
@@ -414,7 +379,7 @@ impl TestExecutor {
         }
         // Get block at position
         for pos in blocks {
-            if let Some(block_str) = self.bot.get_block(pos).await? {
+            if let Some(block_str) = self.bot.get_block(pos)? {
                 let block_id = block::extract_block_id(&block_str);
                 let recorder = self.recorder.as_mut().unwrap();
                 recorder.add_assertion(pos, &block_id);
@@ -423,25 +388,22 @@ impl TestExecutor {
                     .send_command(&format!(
                         "say Added assert at [{}, {}, {}] = {}",
                         pos[0], pos[1], pos[2], block_id
-                    ))
-                    .await?;
+                    ))?;
             } else {
                 self.bot
                     .send_command(&format!(
                         "say No block found at [{}, {}, {}]",
                         pos[0], pos[1], pos[2]
-                    ))
-                    .await?;
+                    ))?;
             }
         }
         Ok(())
     }
 
-    pub(super) async fn handle_record_assert_changes(&mut self) -> Result<()> {
+    pub(super) fn handle_record_assert_changes(&mut self) -> Result<()> {
         let Some(recorder) = self.require_recorder() else {
             self.bot
-                .send_command("say No recording in progress.")
-                .await?;
+                .send_command("say No recording in progress.")?;
             return Ok(());
         };
 
@@ -450,24 +412,21 @@ impl TestExecutor {
             .send_command(&format!(
                 "say Converted {} actions to assertions for this tick.",
                 count
-            ))
-            .await?;
+            ))?;
         Ok(())
     }
 
-    pub(super) async fn handle_record_save(&mut self) -> Result<bool> {
+    pub(super) fn handle_record_save(&mut self) -> Result<bool> {
         let Some(recorder) = self.recorder.take() else {
             self.bot
-                .send_command("say No recording in progress.")
-                .await?;
+                .send_command("say No recording in progress.")?;
             return Ok(false);
         };
 
         // Check if there's anything to save
         if recorder.timeline.is_empty() {
             self.bot
-                .send_command("say Warning: No actions recorded! Test will be empty.")
-                .await?;
+                .send_command("say Warning: No actions recorded! Test will be empty.")?;
         }
 
         match recorder.save() {
@@ -476,14 +435,12 @@ impl TestExecutor {
                     .send_command(&format!(
                         "say Test saved to: {}",
                         path.file_name().unwrap_or_default().to_string_lossy()
-                    ))
-                    .await?;
+                    ))?;
                 println!("Test saved to: {}", path.display());
 
                 // Print execution commands
                 self.bot
-                    .send_command(&format!("say To execute: !run {}", recorder.test_name))
-                    .await?;
+                    .send_command(&format!("say To execute: !run {}", recorder.test_name))?;
                 println!(
                     "To execute this test locally:\ncargo run -- --server localhost:25565 {}",
                     recorder.test_name
@@ -491,26 +448,24 @@ impl TestExecutor {
             }
             Err(e) => {
                 self.bot
-                    .send_command(&format!("say Failed to save test: {}", e))
-                    .await?;
+                    .send_command(&format!("say Failed to save test: {}", e))?;
                 eprintln!("Failed to save: {}", e);
                 return Err(e);
             }
         }
 
         // Unfreeze time after recording
-        self.bot.send_command("tick unfreeze").await?;
+        self.bot.send_command("tick unfreeze")?;
 
         Ok(true)
     }
 
-    pub(super) async fn handle_record_snapshot(&mut self) -> Result<()> {
+    pub(super) fn handle_record_snapshot(&mut self) -> Result<()> {
         let recorder = match self.recorder.as_mut() {
             Some(r) => r,
             None => {
                 self.bot
-                    .send_command("say No recording in progress.")
-                    .await?;
+                    .send_command("say No recording in progress.")?;
                 return Ok(());
             }
         };
@@ -519,11 +474,10 @@ impl TestExecutor {
         let scan_radius = recorder.scan_radius;
 
         self.bot
-            .send_command("say Scanning for block changes...")
-            .await?;
+            .send_command("say Scanning for block changes...")?;
 
         // Scan current blocks
-        let current_blocks = self.scan_blocks_around(scan_center, scan_radius).await?;
+        let current_blocks = self.scan_blocks_around(scan_center, scan_radius)?;
 
         // Compare with initial snapshot and record differences
         let mut changes = 0;
@@ -569,29 +523,26 @@ impl TestExecutor {
         }
 
         self.bot
-            .send_command(&format!("say Found {} block changes", changes))
-            .await?;
+            .send_command(&format!("say Found {} block changes", changes))?;
         Ok(())
     }
 
-    pub(super) async fn handle_record_cancel(&mut self) -> Result<()> {
+    pub(super) fn handle_record_cancel(&mut self) -> Result<()> {
         if self.recorder.take().is_some() {
             // Unfreeze time after cancelling
-            self.bot.send_command("tick unfreeze").await?;
-            self.bot.send_command("say Recording cancelled.").await?;
+            self.bot.send_command("tick unfreeze")?;
+            self.bot.send_command("say Recording cancelled.")?;
         } else {
             self.bot
-                .send_command("say No recording in progress.")
-                .await?;
+                .send_command("say No recording in progress.")?;
         }
         Ok(())
     }
 
-    pub(super) async fn handle_record_sprint(&mut self, ticks: u32) -> Result<()> {
+    pub(super) fn handle_record_sprint(&mut self, ticks: u32) -> Result<()> {
         for _ in 0..ticks {
-            self.handle_record_tick().await?;
-            self.handle_record_assert(&self.last_assert_pos.clone())
-                .await?;
+            self.handle_record_tick()?;
+            self.handle_record_assert(&self.last_assert_pos.clone())?;
         }
         Ok(())
     }

@@ -116,6 +116,7 @@ pub fn make_block(block_str: &str) -> Block {
 }
 
 /// Normalize block name for comparison (remove minecraft: prefix and underscores)
+#[allow(dead_code)]
 pub fn normalize_block_name(name: &str) -> String {
     name.trim_start_matches("minecraft:")
         .to_lowercase()
@@ -123,6 +124,7 @@ pub fn normalize_block_name(name: &str) -> String {
 }
 
 /// Check if actual block matches expected block name
+#[allow(dead_code)]
 pub fn block_matches(actual: &str, expected: &str) -> bool {
     let actual_lower = actual.to_lowercase();
     let expected_normalized = normalize_block_name(expected);
