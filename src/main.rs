@@ -299,6 +299,7 @@ fn main() -> Result<()> {
     executor.set_verbose(args.verbose);
     executor.set_quiet(args.quiet || !matches!(args.format, OutputFormat::Pretty));
     executor.set_fail_fast(args.fail_fast);
+    executor.set_enable_breakpoints(false);
     if let Some(events_path) = args.emit_events.clone() {
         if test_files.len() != 1 {
             eprintln!(
@@ -458,7 +459,7 @@ fn main() -> Result<()> {
                         vec![failure.clone()],
                         failure.tick,
                     );
-                    let base_url = std::env::var("FLINT_VIZ_URL").unwrap_or_else(|_| "http://localhost:7878".to_string());
+                    let base_url = std::env::var("FLINT_VIZ_URL").unwrap_or_else(|_| "http://localhost:5173".to_string());
                     if let Ok(url) = flint_core::viz_link::failure_url(&payload, &base_url) {
                         println!("  [Visualizer Link for {}]:", test_name.bold());
                         println!("  {}", url.underline().blue());

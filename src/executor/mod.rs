@@ -15,7 +15,7 @@ use colored::Colorize;
 use flint_core::loader::TestLoader;
 use flint_core::results::{ActionOutcome, AssertFailure, AssertPosition, TestResult};
 use flint_core::test_spec::{ActionType, AssertType, TestSpec, TimelineEntry};
-use flint_core::traits::FlintPlayer;
+use flint_core::traits::{FlintPlayer, FlintWorld};
 use flint_core::timeline::TimelineAggregate;
 use std::io::Write;
 pub use tick::{COMMAND_DELAY_MS, MIN_RETRY_DELAY_MS};
@@ -46,6 +46,7 @@ pub struct TestExecutor {
     last_assert_pos: Vec<String>,
     events_path: Option<std::path::PathBuf>,
     events: Option<events::JsonlWriter>,
+    enable_breakpoints: bool,
 }
 
 impl Default for TestExecutor {
@@ -61,6 +62,7 @@ impl Default for TestExecutor {
             last_assert_pos: vec![],
             events_path: None,
             events: None,
+            enable_breakpoints: true,
         }
     }
 }
@@ -84,6 +86,10 @@ impl TestExecutor {
 
     pub fn set_fail_fast(&mut self, fail_fast: bool) {
         self.fail_fast = fail_fast;
+    }
+
+    pub fn set_enable_breakpoints(&mut self, enable: bool) {
+        self.enable_breakpoints = enable;
     }
 
     /// Enable JSONL event emission.
@@ -447,8 +453,25 @@ impl TestExecutor {
             })
             .collect();
 
-        let mut players: Vec<Option<Box<dyn FlintPlayer>>> =
-            (0..tests_with_offsets.len()).map(|_| None).collect();
+        let mut players: Vec<Option<Box<dyn FlintPlayer>>> = tests_with_offsets
+            .iter()
+            .enumerate()
+            .map(|(idx, (spec, _offset))| {
+                if let Some(setup) = &spec.setup
+                    && let Some(player_config) = setup.player.as_ref()
+                {
+                    let mut p = worlds[idx].create_player();
+                    for (slot, item) in &player_config.inventory {
+                        p.set_slot(*slot, Some(item));
+                    }
+                    p.select_hotbar(player_config.selected_hotbar);
+                    p.set_game_mode(player_config.game_mode);
+                    Some(p)
+                } else {
+                    None
+                }
+            })
+            .collect();
 
         // Execute merged timeline
         let mut current_tick = 0;
@@ -575,7 +598,7 @@ impl TestExecutor {
             }
 
             // Check for breakpoint
-            if aggregate.breakpoints.contains(&current_tick) || stepping_mode {
+            if (self.enable_breakpoints && aggregate.breakpoints.contains(&current_tick)) || stepping_mode {
                 let should_continue = tick::wait_for_step(
                     &mut self.bot,
                     &format!("End of tick {} (before step to next tick)", current_tick),

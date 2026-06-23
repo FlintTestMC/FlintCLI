@@ -91,12 +91,20 @@ impl FlintWorld for MinecraftWorld {
     fn create_player(&mut self) -> Box<dyn FlintPlayer> {
         Box::new(MinecraftPlayer {
             bot: self.bot.clone(),
+            selected_hotbar: 1,
+            inventory: std::collections::HashMap::new(),
+            offset: self.offset,
+            game_mode: GameMode::Creative,
         })
     }
 }
 
 pub struct MinecraftPlayer {
     bot: TestBot,
+    selected_hotbar: u8,
+    inventory: std::collections::HashMap<PlayerSlot, Item>,
+    offset: [i32; 3],
+    game_mode: GameMode,
 }
 
 pub fn slot_to_minecraft_name(slot: PlayerSlot) -> &'static str {
@@ -122,29 +130,99 @@ impl FlintPlayer for MinecraftPlayer {
     fn set_slot(&mut self, slot: PlayerSlot, item: Option<&Item>) {
         let slot_name = slot_to_minecraft_name(slot);
         let cmd = if let Some(it) = item {
+            self.inventory.insert(slot, it.clone());
             format!("item replace entity flintmc_testbot {} with {} {}", slot_name, it.id, it.count)
         } else {
+            self.inventory.remove(&slot);
             format!("item replace entity flintmc_testbot {} with air", slot_name)
         };
         let _ = self.bot.send_command(&cmd);
         std::thread::sleep(std::time::Duration::from_millis(tick::COMMAND_DELAY_MS));
     }
 
-    fn get_slot(&self, _slot: PlayerSlot, _requested_data: Vec<String>) -> Option<Item> {
-        None
+    fn get_slot(&self, slot: PlayerSlot, _requested_data: Vec<String>) -> Option<Item> {
+        self.inventory.get(&slot).cloned()
     }
 
-    fn select_hotbar(&mut self, _slot: u8) {
+    fn select_hotbar(&mut self, slot: u8) {
+        self.selected_hotbar = slot;
     }
 
     fn selected_hotbar(&self) -> u8 {
-        1
+        self.selected_hotbar
     }
 
-    fn use_item_on(&mut self, _pos: BlockPos, _face: &BlockFace) {
+    fn use_item_on(&mut self, pos: BlockPos, face: &BlockFace) {
+        let slot = match self.selected_hotbar {
+            1 => PlayerSlot::Hotbar1,
+            2 => PlayerSlot::Hotbar2,
+            3 => PlayerSlot::Hotbar3,
+            4 => PlayerSlot::Hotbar4,
+            5 => PlayerSlot::Hotbar5,
+            6 => PlayerSlot::Hotbar6,
+            7 => PlayerSlot::Hotbar7,
+            8 => PlayerSlot::Hotbar8,
+            9 => PlayerSlot::Hotbar9,
+            _ => PlayerSlot::Hotbar1,
+        };
+
+        if let Some(item) = self.inventory.get(&slot) {
+            let mut target_pos = pos;
+            match face {
+                BlockFace::Bottom => target_pos[1] -= 1,
+                BlockFace::Top => target_pos[1] += 1,
+                BlockFace::North => target_pos[2] -= 1,
+                BlockFace::South => target_pos[2] += 1,
+                BlockFace::West => target_pos[0] -= 1,
+                BlockFace::East => target_pos[0] += 1,
+            }
+
+            let target_world = [
+                target_pos[0] + self.offset[0],
+                target_pos[1] + self.offset[1],
+                target_pos[2] + self.offset[2],
+            ];
+
+            let mut block_id = if item.id.contains("flint_and_steel") {
+                "minecraft:fire".to_string()
+            } else if item.id.contains(":") {
+                item.id.clone()
+            } else {
+                format!("minecraft:{}", item.id)
+            };
+
+            if let Ok(Some(actual_block_str)) = self.bot.get_block(target_world) {
+                if actual_block_str.to_lowercase().contains("water") {
+                    let id_lower = block_id.to_lowercase();
+                    if id_lower.contains("pane")
+                        || id_lower.contains("fence")
+                        || id_lower.contains("wall")
+                        || id_lower.contains("slab")
+                        || id_lower.contains("stair")
+                    {
+                        block_id = format!("{}[waterlogged=true]", block_id);
+                    }
+                }
+            }
+
+            let cmd = format!("setblock {} {} {} {}", target_world[0], target_world[1], target_world[2], block_id);
+            let _ = self.bot.send_command(&cmd);
+            std::thread::sleep(std::time::Duration::from_millis(tick::COMMAND_DELAY_MS));
+
+            if (self.game_mode == GameMode::Survival || self.game_mode == GameMode::Adventure) && !item.id.contains("flint_and_steel") {
+                if item.count > 1 {
+                    let mut updated_item = item.clone();
+                    updated_item.count -= 1;
+                    self.set_slot(slot, Some(&updated_item));
+                } else {
+                    self.set_slot(slot, None);
+                }
+            }
+        }
     }
 
     fn set_game_mode(&mut self, mode: GameMode) {
+        self.game_mode = mode;
         let mode_str = match mode {
             GameMode::Survival => "survival",
             GameMode::Creative => "creative",
