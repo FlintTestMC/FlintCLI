@@ -368,6 +368,7 @@ fn main() -> Result<()> {
     let start_time = Instant::now();
     let mut all_results = Vec::new();
     let mut all_failures: Vec<(String, AssertFailure)> = Vec::new();
+    let mut test_specs_map = std::collections::HashMap::new();
 
     for (chunk_idx, chunk) in chunks.iter().enumerate() {
         if verbose {
@@ -378,6 +379,7 @@ fn main() -> Result<()> {
         for (test_index, test_file) in chunk.iter().enumerate() {
             match TestSpec::from_file(test_file, false) {
                 Ok(test) => {
+                    test_specs_map.insert(test.name.clone(), (test.clone(), test_file.clone()));
                     // Calculate offset within this chunk (10x10 grid)
                     let offset = calculate_test_offset_default(test_index, chunk.len());
                     if verbose {
@@ -445,6 +447,27 @@ fn main() -> Result<()> {
     }
 
     if all_results.iter().any(|r| !r.success) {
+        if matches!(args.format, OutputFormat::Pretty) && !all_failures.is_empty() {
+            println!("{}", "═".repeat(SEPARATOR_WIDTH).dimmed());
+            println!("{}", "Flint Visualizer Links:".cyan().bold());
+            for (test_name, failure) in &all_failures {
+                if let Some((spec, path)) = test_specs_map.get(test_name) {
+                    let payload = flint_core::viz_link::FailurePayload::new(
+                        spec.clone(),
+                        Some(path.clone()),
+                        vec![failure.clone()],
+                        failure.tick,
+                    );
+                    let base_url = std::env::var("FLINT_VIZ_URL").unwrap_or_else(|_| "http://localhost:7878".to_string());
+                    if let Ok(url) = flint_core::viz_link::failure_url(&payload, &base_url) {
+                        println!("  [Visualizer Link for {}]:", test_name.bold());
+                        println!("  {}", url.underline().blue());
+                    }
+                }
+            }
+            println!("{}", "═".repeat(SEPARATOR_WIDTH).dimmed());
+            println!();
+        }
         std::process::exit(1);
     }
 

@@ -45,6 +45,17 @@ flintmc -s localhost:25565 -i
 
 See **[USAGE.md](USAGE.md)** for the full reference: all flags, output modes, interactive commands, test recording guide, and test format specification.
 
+## Debugging and Visualization
+
+### Flint Visualizer Links
+When a test fails in the default `Pretty` format, FlintCLI automatically emits a clickable link containing the compressed test spec and failure data. Clicking this link opens it in the **FlintVisualizer** tool for interactive 3D inspection.
+
+By default, the visualizer URL is built using `http://localhost:7878`. You can customize this by setting the `FLINT_VIZ_URL` environment variable:
+
+```bash
+FLINT_VIZ_URL="http://your-viz-host:7878" flintmc example_tests/ -s localhost:25565
+```
+
 ## License
 
 MIT
