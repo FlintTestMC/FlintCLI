@@ -5,7 +5,7 @@ use anyhow::Result;
 use colored::Colorize;
 use flint_core::results::{ActionOutcome, AssertFailure, AssertPosition, InfoType};
 use flint_core::test_spec::AssertType;
-use flint_core::test_spec::{ActionType, TimelineEntry, Item, PlayerSlot};
+use flint_core::test_spec::{ActionType, Item, PlayerSlot, TimelineEntry};
 use flint_core::traits::{FlintPlayer, FlintWorld};
 
 // Constants for action timing
@@ -60,8 +60,16 @@ pub fn execute_action(
         }
 
         ActionType::Fill { region, with } => {
-            let world_min = [region[0][0] + world.offset[0], region[0][1] + world.offset[1], region[0][2] + world.offset[2]];
-            let world_max = [region[1][0] + world.offset[0], region[1][1] + world.offset[1], region[1][2] + world.offset[2]];
+            let world_min = [
+                region[0][0] + world.offset[0],
+                region[0][1] + world.offset[1],
+                region[0][2] + world.offset[2],
+            ];
+            let world_max = [
+                region[1][0] + world.offset[0],
+                region[1][1] + world.offset[1],
+                region[1][2] + world.offset[2],
+            ];
             let block_spec = with.to_command();
             let cmd = format!(
                 "fill {} {} {} {} {} {} {}",
@@ -126,7 +134,8 @@ pub fn execute_action(
                         // Helper function to check ID match (allowing for optional minecraft: prefix difference)
                         let check_id = |actual: &str, expected: &str| -> bool {
                             let actual_clean = actual.strip_prefix("minecraft:").unwrap_or(actual);
-                            let expected_clean = expected.strip_prefix("minecraft:").unwrap_or(expected);
+                            let expected_clean =
+                                expected.strip_prefix("minecraft:").unwrap_or(expected);
                             actual_clean.to_lowercase() == expected_clean.to_lowercase()
                         };
 
@@ -139,7 +148,9 @@ pub fn execute_action(
                             if matches_id {
                                 for (prop_name, expected_value) in &expected_block.properties {
                                     if let Some(actual_value) = actual.properties.get(prop_name) {
-                                        if actual_value.to_lowercase() != expected_value.to_lowercase() {
+                                        if actual_value.to_lowercase()
+                                            != expected_value.to_lowercase()
+                                        {
                                             matches_props = false;
                                             break;
                                         }
@@ -157,12 +168,13 @@ pub fn execute_action(
                         }
 
                         if !matched_any {
-                            let first_expected = expected_blocks.first().cloned().unwrap_or_else(|| {
-                                flint_core::test_spec::Block {
-                                    id: "minecraft:air".to_string(),
-                                    properties: Default::default(),
-                                }
-                            });
+                            let first_expected =
+                                expected_blocks.first().cloned().unwrap_or_else(|| {
+                                    flint_core::test_spec::Block {
+                                        id: "minecraft:air".to_string(),
+                                        properties: Default::default(),
+                                    }
+                                });
 
                             if verbose {
                                 println!(
@@ -188,12 +200,13 @@ pub fn execute_action(
                         }
 
                         if verbose {
-                            let first_expected = expected_blocks.first().cloned().unwrap_or_else(|| {
-                                flint_core::test_spec::Block {
-                                    id: "minecraft:air".to_string(),
-                                    properties: Default::default(),
-                                }
-                            });
+                            let first_expected =
+                                expected_blocks.first().cloned().unwrap_or_else(|| {
+                                    flint_core::test_spec::Block {
+                                        id: "minecraft:air".to_string(),
+                                        properties: Default::default(),
+                                    }
+                                });
                             println!(
                                 "    {} Tick {}: assert block at [{}, {}, {}] is {}",
                                 "✓".green(),
@@ -215,9 +228,14 @@ pub fn execute_action(
                         let match_ok = match (&check.is, &actual) {
                             (None, None) => true,
                             (Some(expected), Some(act)) => {
-                                let actual_clean = act.id.strip_prefix("minecraft:").unwrap_or(&act.id);
-                                let expected_clean = expected.id.strip_prefix("minecraft:").unwrap_or(&expected.id);
-                                let id_matches = actual_clean.to_lowercase() == expected_clean.to_lowercase();
+                                let actual_clean =
+                                    act.id.strip_prefix("minecraft:").unwrap_or(&act.id);
+                                let expected_clean = expected
+                                    .id
+                                    .strip_prefix("minecraft:")
+                                    .unwrap_or(&expected.id);
+                                let id_matches =
+                                    actual_clean.to_lowercase() == expected_clean.to_lowercase();
                                 let count_matches = act.count == expected.count;
                                 id_matches && count_matches
                             }
@@ -237,8 +255,15 @@ pub fn execute_action(
                             }
                             return Ok(ActionOutcome::AssertFailed(AssertFailure {
                                 tick,
-                                expected: check.is.clone().map(InfoType::Item).unwrap_or_else(|| InfoType::String("empty".to_string())),
-                                actual: actual.clone().map(InfoType::Item).unwrap_or_else(|| InfoType::String("empty".to_string())),
+                                expected: check
+                                    .is
+                                    .clone()
+                                    .map(InfoType::Item)
+                                    .unwrap_or_else(|| InfoType::String("empty".to_string())),
+                                actual: actual
+                                    .clone()
+                                    .map(InfoType::Item)
+                                    .unwrap_or_else(|| InfoType::String("empty".to_string())),
                                 position: AssertPosition::from_array([0, 0, 0]),
                                 error_message: "Inventory slot content was different".to_string(),
                                 execution_time_ms: None,

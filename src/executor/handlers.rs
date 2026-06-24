@@ -43,32 +43,26 @@ impl TestExecutor {
             .send_command("say !search <pattern> - Search tests by name")?;
         self.bot
             .send_command("say !run <test_name> [step] - Run a specific test")?;
-        self.bot
-            .send_command("say !run-all - Run all tests")?;
+        self.bot.send_command("say !run-all - Run all tests")?;
         self.bot
             .send_command("say !run-tags <tag1,tag2> - Run tests with tags")?;
         self.bot.send_command("say !list - List all tests")?;
-        self.bot
-            .send_command("say !reload - Reload test files")?;
+        self.bot.send_command("say !reload - Reload test files")?;
         self.bot
             .send_command("say Recorder: !record <name>, !tick/!next, !save, !cancel")?;
         self.bot
             .send_command("say Recorder actions: !assert <x> <y> <z>, !assert_changes")?;
-        self.bot
-            .send_command(
-                "say Recorder actions: !pos1 <x> <y> <z>, !pos - Allow to use assert for a 3d area",
-            )?;
-        self.bot
-            .send_command("say Recorder actions: !sprint <tick> - ticks this ticks and asserts after each tick")?;
-        self.bot
-            .send_command("say !stop - Exit interactive mode")?;
+        self.bot.send_command(
+            "say Recorder actions: !pos1 <x> <y> <z>, !pos - Allow to use assert for a 3d area",
+        )?;
+        self.bot.send_command(
+            "say Recorder actions: !sprint <tick> - ticks this ticks and asserts after each tick",
+        )?;
+        self.bot.send_command("say !stop - Exit interactive mode")?;
         Ok(())
     }
 
-    pub(super) fn handle_list(
-        &mut self,
-        all_test_files: &[std::path::PathBuf],
-    ) -> Result<()> {
+    pub(super) fn handle_list(&mut self, all_test_files: &[std::path::PathBuf]) -> Result<()> {
         self.bot
             .send_command(&format!("say Found {} tests:", all_test_files.len()))?;
         for test_file in all_test_files {
@@ -95,17 +89,18 @@ impl TestExecutor {
         let mut found = 0;
         for test_file in all_test_files {
             if let Ok(test) = TestSpec::from_file(test_file, false)
-                && test.name.to_lowercase().contains(&pattern_lower) {
-                    let tags = if test.tags.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" [{}]", test.tags.join(", "))
-                    };
-                    self.bot
-                        .send_command(&format!("say - {}{}", test.name, tags))?;
-                    found += 1;
-                    std::thread::sleep(std::time::Duration::from_millis(TEST_RESULT_DELAY_MS));
-                }
+                && test.name.to_lowercase().contains(&pattern_lower)
+            {
+                let tags = if test.tags.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", test.tags.join(", "))
+                };
+                self.bot
+                    .send_command(&format!("say - {}{}", test.name, tags))?;
+                found += 1;
+                std::thread::sleep(std::time::Duration::from_millis(TEST_RESULT_DELAY_MS));
+            }
         }
         if found == 0 {
             self.bot
@@ -129,30 +124,31 @@ impl TestExecutor {
         let mut found_test = None;
         for test_file in all_test_files {
             if let Ok(test) = TestSpec::from_file(test_file, false)
-                && test.name.to_lowercase() == name_lower {
-                    found_test = Some(test);
-                    break;
-                }
+                && test.name.to_lowercase() == name_lower
+            {
+                found_test = Some(test);
+                break;
+            }
         }
 
         // Second pass: fall back to partial match if no exact match
         if found_test.is_none() {
             for test_file in all_test_files {
                 if let Ok(test) = TestSpec::from_file(test_file, false)
-                    && test.name.to_lowercase().contains(&name_lower) {
-                        found_test = Some(test);
-                        break;
-                    }
+                    && test.name.to_lowercase().contains(&name_lower)
+                {
+                    found_test = Some(test);
+                    break;
+                }
             }
         }
 
         if let Some(test) = found_test {
             if step_mode {
-                self.bot
-                    .send_command(&format!(
-                        "say Running test: {} (step mode - type 's' or 'c')",
-                        test.name
-                    ))?;
+                self.bot.send_command(&format!(
+                    "say Running test: {} (step mode - type 's' or 'c')",
+                    test.name
+                ))?;
             } else {
                 self.bot
                     .send_command(&format!("say Running test: {}", test.name))?;
@@ -173,15 +169,11 @@ impl TestExecutor {
         Ok(())
     }
 
-    pub(super) fn handle_run_all(
-        &mut self,
-        all_test_files: &[std::path::PathBuf],
-    ) -> Result<()> {
-        self.bot
-            .send_command(&format!(
-                "say Running all {} tests...",
-                all_test_files.len()
-            ))?;
+    pub(super) fn handle_run_all(&mut self, all_test_files: &[std::path::PathBuf]) -> Result<()> {
+        self.bot.send_command(&format!(
+            "say Running all {} tests...",
+            all_test_files.len()
+        ))?;
 
         let mut specs = Vec::new();
         for test_file in all_test_files {
@@ -194,11 +186,10 @@ impl TestExecutor {
 
         let passed = output.results.iter().filter(|r| r.success).count();
         let failed = output.results.len() - passed;
-        self.bot
-            .send_command(&format!(
-                "say Results: {} passed, {} failed",
-                passed, failed
-            ))?;
+        self.bot.send_command(&format!(
+            "say Results: {} passed, {} failed",
+            passed, failed
+        ))?;
         Ok(())
     }
 
@@ -215,12 +206,11 @@ impl TestExecutor {
             return Ok(());
         }
 
-        self.bot
-            .send_command(&format!(
-                "say Running {} tests with tags {:?}...",
-                test_files.len(),
-                tags
-            ))?;
+        self.bot.send_command(&format!(
+            "say Running {} tests with tags {:?}...",
+            test_files.len(),
+            tags
+        ))?;
 
         let mut specs = Vec::new();
         for test_file in &test_files {
@@ -233,11 +223,10 @@ impl TestExecutor {
 
         let passed = output.results.iter().filter(|r| r.success).count();
         let failed = output.results.len() - passed;
-        self.bot
-            .send_command(&format!(
-                "say Results: {} passed, {} failed",
-                passed, failed
-            ))?;
+        self.bot.send_command(&format!(
+            "say Results: {} passed, {} failed",
+            passed, failed
+        ))?;
         Ok(())
     }
 
@@ -287,10 +276,9 @@ impl TestExecutor {
             .send_command(&format!("say Recording started: {}", test_name))?;
         self.bot
             .send_command("say Time frozen. Block changes will be detected automatically!")?;
-        self.bot
-            .send_command(
-                "say Commands: !assert (add check), !tick (step game tick), !save, !cancel",
-            )?;
+        self.bot.send_command(
+            "say Commands: !assert (add check), !tick (step game tick), !save, !cancel",
+        )?;
 
         Ok(())
     }
@@ -317,11 +305,10 @@ impl TestExecutor {
         recorder.next_tick();
         let new_tick = recorder.current_tick;
 
-        self.bot
-            .send_command(&format!(
-                "say Stepped game tick, now recording tick {} (was {})",
-                new_tick, current_tick
-            ))?;
+        self.bot.send_command(&format!(
+            "say Stepped game tick, now recording tick {} (was {})",
+            new_tick, current_tick
+        ))?;
 
         Ok(())
     }
@@ -378,17 +365,15 @@ impl TestExecutor {
                 let recorder = self.recorder.as_mut().unwrap();
                 recorder.add_assertion(pos, &block_id);
 
-                self.bot
-                    .send_command(&format!(
-                        "say Added assert at [{}, {}, {}] = {}",
-                        pos[0], pos[1], pos[2], block_id
-                    ))?;
+                self.bot.send_command(&format!(
+                    "say Added assert at [{}, {}, {}] = {}",
+                    pos[0], pos[1], pos[2], block_id
+                ))?;
             } else {
-                self.bot
-                    .send_command(&format!(
-                        "say No block found at [{}, {}, {}]",
-                        pos[0], pos[1], pos[2]
-                    ))?;
+                self.bot.send_command(&format!(
+                    "say No block found at [{}, {}, {}]",
+                    pos[0], pos[1], pos[2]
+                ))?;
             }
         }
         Ok(())
@@ -396,24 +381,21 @@ impl TestExecutor {
 
     pub(super) fn handle_record_assert_changes(&mut self) -> Result<()> {
         let Some(recorder) = self.require_recorder() else {
-            self.bot
-                .send_command("say No recording in progress.")?;
+            self.bot.send_command("say No recording in progress.")?;
             return Ok(());
         };
 
         let count = recorder.convert_actions_to_asserts();
-        self.bot
-            .send_command(&format!(
-                "say Converted {} actions to assertions for this tick.",
-                count
-            ))?;
+        self.bot.send_command(&format!(
+            "say Converted {} actions to assertions for this tick.",
+            count
+        ))?;
         Ok(())
     }
 
     pub(super) fn handle_record_save(&mut self) -> Result<bool> {
         let Some(recorder) = self.recorder.take() else {
-            self.bot
-                .send_command("say No recording in progress.")?;
+            self.bot.send_command("say No recording in progress.")?;
             return Ok(false);
         };
 
@@ -425,11 +407,10 @@ impl TestExecutor {
 
         match recorder.save() {
             Ok(path) => {
-                self.bot
-                    .send_command(&format!(
-                        "say Test saved to: {}",
-                        path.file_name().unwrap_or_default().to_string_lossy()
-                    ))?;
+                self.bot.send_command(&format!(
+                    "say Test saved to: {}",
+                    path.file_name().unwrap_or_default().to_string_lossy()
+                ))?;
                 println!("Test saved to: {}", path.display());
 
                 // Print execution commands
@@ -458,8 +439,7 @@ impl TestExecutor {
         let recorder = match self.recorder.as_mut() {
             Some(r) => r,
             None => {
-                self.bot
-                    .send_command("say No recording in progress.")?;
+                self.bot.send_command("say No recording in progress.")?;
                 return Ok(());
             }
         };
@@ -467,8 +447,7 @@ impl TestExecutor {
         let scan_center = recorder.scan_center.unwrap_or([0, 64, 0]);
         let scan_radius = recorder.scan_radius;
 
-        self.bot
-            .send_command("say Scanning for block changes...")?;
+        self.bot.send_command("say Scanning for block changes...")?;
 
         // Scan current blocks
         let current_blocks = self.scan_blocks_around(scan_center, scan_radius)?;
@@ -527,8 +506,7 @@ impl TestExecutor {
             self.bot.send_command("tick unfreeze")?;
             self.bot.send_command("say Recording cancelled.")?;
         } else {
-            self.bot
-                .send_command("say No recording in progress.")?;
+            self.bot.send_command("say No recording in progress.")?;
         }
         Ok(())
     }

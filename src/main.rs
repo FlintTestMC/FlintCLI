@@ -414,8 +414,7 @@ fn main() -> Result<()> {
             println!();
         }
 
-        let output = executor
-            .run_tests_parallel(&tests_with_offsets, args.break_after_setup)?;
+        let output = executor.run_tests_parallel(&tests_with_offsets, args.break_after_setup)?;
 
         all_results.extend(output.results);
         all_failures.extend(output.failures);
@@ -462,7 +461,8 @@ fn main() -> Result<()> {
                         vec![failure.clone()],
                         failure.tick,
                     );
-                    let base_url = std::env::var("FLINT_VIZ_URL").unwrap_or_else(|_| "http://localhost:5173".to_string());
+                    let base_url = std::env::var("FLINT_VIZ_URL")
+                        .unwrap_or_else(|_| "http://localhost:5173".to_string());
                     if let Ok(url) = flint_core::viz_link::failure_url(&payload, &base_url) {
                         println!("  [Visualizer Link for {}]:", test_name.bold());
                         println!("  {}", url.underline().blue());

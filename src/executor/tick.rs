@@ -47,8 +47,8 @@ pub fn wait_for_step(bot: &mut TestBot, reason: &str) -> Result<bool> {
 
     // Now wait for a fresh chat command
     loop {
-        if let Some((_, message)) = bot
-            .recv_chat_timeout(std::time::Duration::from_millis(CHAT_POLL_TIMEOUT_MS))
+        if let Some((_, message)) =
+            bot.recv_chat_timeout(std::time::Duration::from_millis(CHAT_POLL_TIMEOUT_MS))
         {
             // Skip messages from the bot itself (contains "Waiting for step/continue")
             if message.contains("Waiting for step/continue") {
@@ -93,8 +93,8 @@ pub fn query_gametime(bot: &mut TestBot) -> Result<u32> {
     let start = std::time::Instant::now();
 
     while start.elapsed() < timeout {
-        if let Some((_, message)) = bot
-            .recv_chat_timeout(std::time::Duration::from_millis(CHAT_POLL_TIMEOUT_MS))
+        if let Some((_, message)) =
+            bot.recv_chat_timeout(std::time::Duration::from_millis(CHAT_POLL_TIMEOUT_MS))
         {
             // Look for "The time is" message
             if message.contains("The game time is") {
@@ -172,8 +172,8 @@ pub fn sprint_ticks(bot: &mut TestBot, ticks: u32, verbose: bool) -> Result<u64>
     let start = std::time::Instant::now();
 
     while start.elapsed() < timeout {
-        if let Some((_, message)) = bot
-            .recv_chat_timeout(std::time::Duration::from_millis(CHAT_POLL_TIMEOUT_MS))
+        if let Some((_, message)) =
+            bot.recv_chat_timeout(std::time::Duration::from_millis(CHAT_POLL_TIMEOUT_MS))
         {
             // Look for "Sprint completed" message
             if message.contains("Sprint completed") {
@@ -181,19 +181,20 @@ pub fn sprint_ticks(bot: &mut TestBot, ticks: u32, verbose: bool) -> Result<u64>
                 // Format: "... or X ms per tick"
                 if let Some(ms_part) = message.split("or ").nth(1)
                     && let Some(ms_str) = ms_part.split(" ms per tick").next()
-                        && let Ok(ms) = ms_str.trim().parse::<f64>() {
-                            let ms_rounded = ms.ceil() as u64;
-                            if verbose {
-                                println!(
-                                    "    {} Sprint {} ticks completed in {} ms per tick",
-                                    "⚡".dimmed(),
-                                    ticks,
-                                    ms_rounded
-                                );
-                            }
-                            // Return total time: ms per tick * number of ticks
-                            return Ok(ms_rounded * ticks as u64);
-                        }
+                    && let Ok(ms) = ms_str.trim().parse::<f64>()
+                {
+                    let ms_rounded = ms.ceil() as u64;
+                    if verbose {
+                        println!(
+                            "    {} Sprint {} ticks completed in {} ms per tick",
+                            "⚡".dimmed(),
+                            ticks,
+                            ms_rounded
+                        );
+                    }
+                    // Return total time: ms per tick * number of ticks
+                    return Ok(ms_rounded * ticks as u64);
+                }
                 // If we found the message but couldn't parse, use default
                 if verbose {
                     println!(

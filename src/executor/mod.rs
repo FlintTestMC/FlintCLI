@@ -15,8 +15,8 @@ use colored::Colorize;
 use flint_core::loader::TestLoader;
 use flint_core::results::{ActionOutcome, AssertFailure, AssertPosition, TestResult};
 use flint_core::test_spec::{ActionType, AssertType, TestSpec, TimelineEntry};
-use flint_core::traits::{FlintPlayer, FlintWorld};
 use flint_core::timeline::TimelineAggregate;
+use flint_core::traits::{FlintPlayer, FlintWorld};
 use std::io::Write;
 pub use tick::{COMMAND_DELAY_MS, MIN_RETRY_DELAY_MS};
 
@@ -122,9 +122,12 @@ impl TestExecutor {
         self.verbose = true;
 
         // Send help message to chat (without ! to avoid self-triggering)
-        self.bot.send_command("say FlintMC Interactive Mode active")?;
+        self.bot
+            .send_command("say FlintMC Interactive Mode active")?;
         std::thread::sleep(std::time::Duration::from_millis(COMMAND_DELAY_MS));
-        self.bot.send_command("say Type: help, search, run, run-all, run-tags, list, reload, stop (prefix with !)")?;
+        self.bot.send_command(
+            "say Type: help, search, run, run-all, run-tags, list, reload, stop (prefix with !)",
+        )?;
         std::thread::sleep(std::time::Duration::from_millis(COMMAND_DELAY_MS));
 
         // Drain any messages
@@ -163,7 +166,8 @@ impl TestExecutor {
 
                     "!run" => {
                         if args.is_empty() {
-                            self.bot.send_command("say Usage: !run <test_name> [step]")?;
+                            self.bot
+                                .send_command("say Usage: !run <test_name> [step]")?;
                             continue;
                         }
 
@@ -184,7 +188,8 @@ impl TestExecutor {
 
                     "!run-tags" => {
                         if args.is_empty() {
-                            self.bot.send_command("say Usage: !run-tags <tag1,tag2,...>")?;
+                            self.bot
+                                .send_command("say Usage: !run-tags <tag1,tag2,...>")?;
                             continue;
                         }
                         let tags: Vec<String> =
@@ -193,21 +198,28 @@ impl TestExecutor {
                     }
 
                     "!stop" => {
-                        self.bot.send_command("say Exiting interactive mode. Goodbye!")?;
+                        self.bot
+                            .send_command("say Exiting interactive mode. Goodbye!")?;
                         return Ok(());
                     }
 
                     "!reload" => {
                         test_loader.verify_and_rebuild_index()?;
                         all_test_files = test_loader.collect_all_test_files()?;
-                        self.bot.send_command(&format!("say Reloaded {} tests", all_test_files.len()))?;
+                        self.bot.send_command(&format!(
+                            "say Reloaded {} tests",
+                            all_test_files.len()
+                        ))?;
                     }
 
                     // Recorder commands
                     "!record" => {
                         if args.is_empty() {
-                            self.bot.send_command("say Usage: !record <test_name> [player_name]")?;
-                            self.bot.send_command("say Example: !record my_test or !record fence/fence_connect")?;
+                            self.bot
+                                .send_command("say Usage: !record <test_name> [player_name]")?;
+                            self.bot.send_command(
+                                "say Example: !record my_test or !record fence/fence_connect",
+                            )?;
                             continue;
                         }
                         let test_name = args[0].clone();
@@ -241,12 +253,15 @@ impl TestExecutor {
                     "!sprint" => {
                         if args.len() != 1 {
                             self.bot.send_command("say Usage: !sprint <ticks>")?;
-                            self.bot.send_command("say: please be assert before a start state of a block/region")?;
+                            self.bot.send_command(
+                                "say: please be assert before a start state of a block/region",
+                            )?;
                             continue;
                         }
                         let ticks = args[0].parse::<u32>().unwrap_or(1);
                         if ticks == 0 {
-                            self.bot.send_command("say Sprint ticks must be greater than 0")?;
+                            self.bot
+                                .send_command("say Sprint ticks must be greater than 0")?;
                             continue;
                         }
                         if self.last_assert_pos.is_empty() {
@@ -270,7 +285,10 @@ impl TestExecutor {
 
                     _ => {
                         if command.starts_with('!') {
-                            self.bot.send_command(&format!("say Unknown command: {}. Type !help for commands.", command))?;
+                            self.bot.send_command(&format!(
+                                "say Unknown command: {}. Type !help for commands.",
+                                command
+                            ))?;
                         }
                     }
                 }
@@ -482,9 +500,7 @@ impl TestExecutor {
                     let world = &mut worlds[*test_idx];
                     let player = &mut players[*test_idx];
 
-                    match self
-                        .execute_action(world, player, current_tick, entry, *value_idx)
-                    {
+                    match self.execute_action(world, player, current_tick, entry, *value_idx) {
                         Ok(ActionOutcome::AssertPassed) => {
                             test_results[*test_idx].0 += 1;
                             if let Some(events) = self.events.as_mut()
@@ -598,7 +614,9 @@ impl TestExecutor {
             }
 
             // Check for breakpoint
-            if (self.enable_breakpoints && aggregate.breakpoints.contains(&current_tick)) || stepping_mode {
+            if (self.enable_breakpoints && aggregate.breakpoints.contains(&current_tick))
+                || stepping_mode
+            {
                 let should_continue = tick::wait_for_step(
                     &mut self.bot,
                     &format!("End of tick {} (before step to next tick)", current_tick),
