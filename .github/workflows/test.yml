@@ -12,6 +12,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        submodules: "true"
 
     - name: Set up Java
       uses: actions/setup-java@v4
@@ -158,7 +160,7 @@ jobs:
     - name: Run FlintMC Tests
       run: |
         # Run all example tests
-        cargo run --release -- example_tests/ --server localhost:25565 --recursive --verbose
+        cargo run --release -- FlintBenchmark/tests/ --server localhost:25565 --recursive --verbose
       timeout-minutes: 10
 
     - name: Stop Minecraft Server
