@@ -112,14 +112,14 @@ jobs:
         resource-pack-sha1=
         server-ip=
         server-port=25565
-        simulation-distance=10
+        simulation-distance=16
         spawn-protection=16
         status-heartbeat-interval=0
         sync-chunk-writes=true
         text-filtering-config=
         text-filtering-version=0
         use-native-transport=true
-        view-distance=10
+        view-distance=16
         white-list=false
         EOF
 
