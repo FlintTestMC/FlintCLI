@@ -1,6 +1,7 @@
 use crate::bot::TestBot;
 use crate::executor::block;
 use crate::executor::tick;
+use anyhow::Result;
 use flint_core::BlockPos;
 use flint_core::test_spec::{Block, BlockFace, GameMode, Item, PlayerSlot};
 use flint_core::traits::{FlintAdapter, FlintPlayer, FlintWorld, ServerInfo};
@@ -26,6 +27,7 @@ impl FlintAdapter for MinecraftAdapter {
         Box::new(MinecraftWorld {
             bot: self.bot.clone(),
             offset: [0, 0, 0],
+            focus: [0, 64, 0],
             current_tick: 0,
         })
     }
@@ -40,7 +42,22 @@ impl FlintAdapter for MinecraftAdapter {
 pub struct MinecraftWorld {
     pub bot: TestBot,
     pub offset: [i32; 3],
+    pub focus: [i32; 3],
     pub current_tick: u64,
+}
+
+impl MinecraftWorld {
+    fn world_pos(&self, pos: BlockPos) -> [i32; 3] {
+        [
+            pos[0] + self.offset[0],
+            pos[1] + self.offset[1],
+            pos[2] + self.offset[2],
+        ]
+    }
+
+    pub fn ensure_focus(&self) -> Result<()> {
+        self.bot.ensure_near(self.focus)
+    }
 }
 
 impl Drop for MinecraftWorld {
@@ -62,11 +79,8 @@ impl FlintWorld for MinecraftWorld {
     }
 
     fn get_block(&self, pos: BlockPos) -> Block {
-        let world_pos = [
-            pos[0] + self.offset[0],
-            pos[1] + self.offset[1],
-            pos[2] + self.offset[2],
-        ];
+        let world_pos = self.world_pos(pos);
+        let _ = self.bot.ensure_near(world_pos);
         for _ in 0..10 {
             if let Ok(Some(actual_block_str)) = self.bot.get_block(world_pos) {
                 let normalized_id = block::extract_block_id(&actual_block_str);
@@ -85,11 +99,7 @@ impl FlintWorld for MinecraftWorld {
     }
 
     fn set_block(&mut self, pos: BlockPos, block: &Block) {
-        let world_pos = [
-            pos[0] + self.offset[0],
-            pos[1] + self.offset[1],
-            pos[2] + self.offset[2],
-        ];
+        let world_pos = self.world_pos(pos);
         let block_spec = block.to_command();
         let cmd = format!(
             "setblock {} {} {} {}",
@@ -196,6 +206,8 @@ impl FlintPlayer for MinecraftPlayer {
                 target_pos[1] + self.offset[1],
                 target_pos[2] + self.offset[2],
             ];
+
+            let _ = self.bot.ensure_near(target_world);
 
             let mut block_id = if item.id.contains("flint_and_steel") {
                 "minecraft:fire".to_string()

@@ -2,13 +2,15 @@ use anyhow::Result;
 use azalea::prelude::*;
 use parking_lot::RwLock;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 // Constants for connection and timing
 const INIT_WAIT_ATTEMPTS: u32 = 50;
 const INIT_WAIT_DELAY_MS: u64 = 100;
 const GAME_STATE_WAIT_ATTEMPTS: u32 = 100;
 const WORLD_SYNC_DELAY_MS: u64 = 500;
+const DEFAULT_CHUNK_LOAD_DELAY_MS: u64 = 0;
+const TELEPORT_NEAR_THRESHOLD: i32 = 32;
 
 type ChatReceiver = std::sync::mpsc::Receiver<(Option<String>, String)>;
 
@@ -29,11 +31,25 @@ impl Default for State {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct TestBot {
     client: Option<Arc<RwLock<Option<Client>>>>,
     in_game: Option<Arc<AtomicBool>>,
     chat_rx: Option<Arc<parking_lot::Mutex<ChatReceiver>>>,
+    last_near: Arc<parking_lot::Mutex<Option<[i32; 3]>>>,
+    chunk_load_delay_ms: Arc<AtomicU64>,
+}
+
+impl Default for TestBot {
+    fn default() -> Self {
+        Self {
+            client: None,
+            in_game: None,
+            chat_rx: None,
+            last_near: Arc::new(parking_lot::Mutex::new(None)),
+            chunk_load_delay_ms: Arc::new(AtomicU64::new(DEFAULT_CHUNK_LOAD_DELAY_MS)),
+        }
+    }
 }
 
 impl TestBot {
@@ -145,6 +161,7 @@ impl TestBot {
         self.client = Some(client_handle);
         self.in_game = Some(in_game);
         self.chat_rx = Some(Arc::new(parking_lot::Mutex::new(chat_rx)));
+        self.last_near = Arc::new(parking_lot::Mutex::new(None));
         tracing::info!("Connected successfully and in game state");
 
         // Give a small amount of extra time for world data to sync
@@ -181,6 +198,58 @@ impl TestBot {
         tracing::debug!("Sending command: {}", command_with_slash);
         client.chat(&command_with_slash);
         Ok(())
+    }
+
+    /// Teleport the bot near `pos` so the client loads chunks and the server simulates blocks.
+    /// When `force` is false, skips the teleport if already within `TELEPORT_NEAR_THRESHOLD`.
+    pub fn ensure_near(&self, pos: [i32; 3]) -> Result<()> {
+        self.ensure_near_inner(pos, false)
+    }
+
+    /// Always teleport, ignoring the near-position cache (used when visiting each parallel test).
+    pub fn ensure_near_force(&self, pos: [i32; 3]) -> Result<()> {
+        self.ensure_near_inner(pos, true)
+    }
+
+    fn ensure_near_inner(&self, pos: [i32; 3], force: bool) -> Result<()> {
+        let need_tp = if force {
+            true
+        } else {
+            let last = self.last_near.lock();
+            match *last {
+                Some(p) => {
+                    (p[0] - pos[0])
+                        .abs()
+                        .max((p[1] - pos[1]).abs())
+                        .max((p[2] - pos[2]).abs())
+                        > TELEPORT_NEAR_THRESHOLD
+                }
+                None => true,
+            }
+        };
+
+        if need_tp {
+            let tp_y = pos[1].clamp(-60, 320);
+            self.send_command(&format!(
+                "tp flintmc_testbot {} {} {}",
+                pos[0], tp_y, pos[2]
+            ))?;
+            let delay = self.chunk_load_delay_ms.load(Ordering::Relaxed);
+            if delay > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(delay));
+            }
+            *self.last_near.lock() = Some(pos);
+        }
+
+        Ok(())
+    }
+
+    pub fn set_chunk_load_delay_ms(&self, delay_ms: u64) {
+        self.chunk_load_delay_ms.store(delay_ms, Ordering::Relaxed);
+    }
+
+    pub fn reset_teleport_cache(&self) {
+        *self.last_near.lock() = None;
     }
 
     pub fn get_block(&self, pos: [i32; 3]) -> Result<Option<String>> {

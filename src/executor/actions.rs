@@ -22,6 +22,8 @@ pub fn execute_action(
     action_delay_ms: u64,
     verbose: bool,
 ) -> Result<ActionOutcome> {
+    let _ = world.ensure_focus();
+
     match &entry.action_type {
         ActionType::Place { pos, block } => {
             world.set_block(*pos, block);

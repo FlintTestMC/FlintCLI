@@ -9,6 +9,7 @@ mod recorder;
 mod tick;
 
 use crate::bot::TestBot;
+use crate::spatial_batch::test_focus_pos;
 use adapter::MinecraftWorld;
 use anyhow::Result;
 use colored::Colorize;
@@ -72,6 +73,10 @@ impl TestExecutor {
         Self::default()
     }
 
+    pub fn set_chunk_load_delay(&mut self, delay_ms: u64) {
+        self.bot.set_chunk_load_delay_ms(delay_ms);
+    }
+
     pub fn set_action_delay(&mut self, delay_ms: u64) {
         self.action_delay_ms = delay_ms;
     }
@@ -114,6 +119,44 @@ impl TestExecutor {
     /// Helper to apply offset to a position
     fn apply_offset(&self, pos: [i32; 3], offset: [i32; 3]) -> [i32; 3] {
         [pos[0] + offset[0], pos[1] + offset[1], pos[2] + offset[2]]
+    }
+
+    fn forceload_regions(
+        &self,
+        tests_with_offsets: &[(TestSpec, [i32; 3])],
+        add: bool,
+    ) -> Result<()> {
+        for (test, offset) in tests_with_offsets {
+            let region = test.cleanup_region();
+            let min = self.apply_offset(region[0], *offset);
+            let max = self.apply_offset(region[1], *offset);
+            let cx0 = min[0].div_euclid(16);
+            let cz0 = min[2].div_euclid(16);
+            let cx1 = max[0].div_euclid(16);
+            let cz1 = max[2].div_euclid(16);
+            let verb = if add { "add" } else { "remove" };
+            let cmd = format!("forceload {verb} {cx0} {cz0} {cx1} {cz1}");
+            self.bot.send_command(&cmd)?;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(COMMAND_DELAY_MS));
+        Ok(())
+    }
+
+    fn sync_active_regions(
+        &self,
+        tests_with_offsets: &[(TestSpec, [i32; 3])],
+        tests_cleaned: &[bool],
+        test_max_ticks: &[u32],
+        current_tick: u32,
+    ) -> Result<()> {
+        for (idx, (test, offset)) in tests_with_offsets.iter().enumerate() {
+            if tests_cleaned[idx] || current_tick > test_max_ticks[idx] {
+                continue;
+            }
+            self.bot.ensure_near_force(test_focus_pos(test, *offset))?;
+        }
+        self.bot.ensure_near_force([0, 64, 0])?;
+        Ok(())
     }
 
     /// Interactive mode: listen for chat commands and execute them
@@ -412,6 +455,9 @@ impl TestExecutor {
         }
         std::thread::sleep(std::time::Duration::from_millis(CLEANUP_DELAY_MS));
 
+        self.bot.reset_teleport_cache();
+        self.forceload_regions(tests_with_offsets, true)?;
+
         // Freeze time globally
         self.bot.send_command("tick freeze")?;
         std::thread::sleep(std::time::Duration::from_millis(COMMAND_DELAY_MS));
@@ -464,9 +510,10 @@ impl TestExecutor {
         // Initialize per-test worlds and players using the trait model
         let mut worlds: Vec<MinecraftWorld> = tests_with_offsets
             .iter()
-            .map(|(_test, offset)| MinecraftWorld {
+            .map(|(test, offset)| MinecraftWorld {
                 bot: self.bot.clone(),
                 offset: *offset,
+                focus: test_focus_pos(test, *offset),
                 current_tick: 0,
             })
             .collect();
@@ -626,6 +673,12 @@ impl TestExecutor {
 
             // Advance to next tick.
             if let Some((scan_min, scan_max)) = scan_bounds {
+                self.sync_active_regions(
+                    tests_with_offsets,
+                    &tests_cleaned,
+                    &test_max_ticks,
+                    current_tick,
+                )?;
                 tick::step_tick(&mut self.bot, verbose)?;
                 std::thread::sleep(std::time::Duration::from_millis(CLEANUP_DELAY_MS));
                 let world_blocks = self.scan_region(scan_min, scan_max)?;
@@ -635,6 +688,12 @@ impl TestExecutor {
                 current_tick += 1;
             } else if current_tick < aggregate.max_tick {
                 if stepping_mode {
+                    self.sync_active_regions(
+                    tests_with_offsets,
+                    &tests_cleaned,
+                    &test_max_ticks,
+                    current_tick,
+                )?;
                     tick::step_tick(&mut self.bot, verbose)?;
                     std::thread::sleep(std::time::Duration::from_millis(CLEANUP_DELAY_MS));
                     current_tick += 1;
@@ -648,6 +707,13 @@ impl TestExecutor {
                     } else {
                         aggregate.max_tick - current_tick
                     };
+
+                    self.sync_active_regions(
+                    tests_with_offsets,
+                    &tests_cleaned,
+                    &test_max_ticks,
+                    current_tick,
+                )?;
 
                     let sprint_time_ms = if ticks_to_sprint == 1 {
                         tick::step_tick(&mut self.bot, verbose)?
@@ -691,6 +757,7 @@ impl TestExecutor {
 
         // Unfreeze time
         self.bot.send_command("tick unfreeze")?;
+        self.forceload_regions(tests_with_offsets, false)?;
 
         // Clean up remaining tests
         for test_idx in 0..tests_with_offsets.len() {

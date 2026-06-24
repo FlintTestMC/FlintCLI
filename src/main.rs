@@ -1,5 +1,6 @@
 mod bot;
 mod executor;
+mod spatial_batch;
 
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, ValueEnum};
@@ -10,6 +11,7 @@ use flint_core::format::{format_number, print_concise_summary, print_test_summar
 use flint_core::loader::TestLoader;
 use flint_core::results::AssertFailure;
 use flint_core::spatial::calculate_test_offsets_for_batch_default;
+use spatial_batch::split_tests_by_simulation_distance;
 use flint_core::test_spec::{ActionType, TestSpec};
 use std::path::Path;
 use std::path::PathBuf;
@@ -120,6 +122,15 @@ struct Args {
     /// Coordinates are emitted in test-local space.
     #[arg(long, value_name = "PATH")]
     emit_events: Option<PathBuf>,
+
+    /// Server simulation distance in chunks. Used to split parallel batches so every
+    /// test region stays within ticking range of the bot at the layout center.
+    #[arg(long, default_value = "10")]
+    simulation_distance: u32,
+
+    /// Milliseconds to wait after teleporting so chunks load on the client (0 = no wait).
+    #[arg(long, default_value = "0")]
+    chunk_load_delay: u64,
 }
 
 fn main() -> Result<()> {
@@ -295,6 +306,7 @@ fn main() -> Result<()> {
 
     // Set action delay
     executor.set_action_delay(args.action_delay);
+    executor.set_chunk_load_delay(args.chunk_load_delay);
     executor.set_verbose(args.verbose);
     executor.set_quiet(args.quiet || !matches!(args.format, OutputFormat::Pretty));
     executor.set_fail_fast(args.fail_fast);
@@ -395,29 +407,60 @@ fn main() -> Result<()> {
             }
         }
 
-        let offsets = calculate_test_offsets_for_batch_default(&chunk_specs);
-        for (test_index, (test, offset)) in chunk_specs.into_iter().zip(offsets).enumerate() {
-            if verbose {
+        let sim_batches =
+            split_tests_by_simulation_distance(chunk_specs, args.simulation_distance);
+
+        if verbose && sim_batches.len() > 1 {
+            println!(
+                "  {} Split into {} parallel batch(es) for simulation-distance={}\n",
+                "→".blue(),
+                sim_batches.len(),
+                args.simulation_distance
+            );
+        }
+
+        for (sim_batch_idx, sim_batch) in sim_batches.iter().enumerate() {
+            if verbose && sim_batches.len() > 1 {
                 println!(
-                    "  {} Test {} (offset: [{}, {}, {}])",
+                    "  {} Simulation batch {}/{} ({} tests)",
                     "→".blue(),
-                    format!("[{}/{}]", test_index + 1, chunk.len()).dimmed(),
-                    offset[0],
-                    offset[1],
-                    offset[2]
+                    sim_batch_idx + 1,
+                    sim_batches.len(),
+                    sim_batch.len()
                 );
             }
-            tests_with_offsets.push((test, offset));
+
+            let offsets = calculate_test_offsets_for_batch_default(sim_batch);
+            tests_with_offsets.clear();
+            for (test_index, (test, offset)) in sim_batch.iter().cloned().zip(offsets).enumerate()
+            {
+                if verbose {
+                    println!(
+                        "  {} Test {} (offset: [{}, {}, {}])",
+                        "→".blue(),
+                        format!("[{}/{}]", test_index + 1, sim_batch.len()).dimmed(),
+                        offset[0],
+                        offset[1],
+                        offset[2]
+                    );
+                }
+                tests_with_offsets.push((test, offset));
+            }
+
+            if verbose {
+                println!();
+            }
+
+            let output =
+                executor.run_tests_parallel(&tests_with_offsets, args.break_after_setup)?;
+
+            all_results.extend(output.results);
+            all_failures.extend(output.failures);
+
+            if args.fail_fast && !all_failures.is_empty() {
+                break;
+            }
         }
-
-        if verbose {
-            println!();
-        }
-
-        let output = executor.run_tests_parallel(&tests_with_offsets, args.break_after_setup)?;
-
-        all_results.extend(output.results);
-        all_failures.extend(output.failures);
 
         if args.fail_fast && !all_failures.is_empty() {
             break;
