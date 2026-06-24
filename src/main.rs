@@ -9,7 +9,7 @@ use flint_core::format;
 use flint_core::format::{format_number, print_concise_summary, print_test_summary};
 use flint_core::loader::TestLoader;
 use flint_core::results::AssertFailure;
-use flint_core::spatial::calculate_test_offset_default;
+use flint_core::spatial::calculate_test_offsets_for_batch_default;
 use flint_core::test_spec::{ActionType, TestSpec};
 use std::path::Path;
 use std::path::PathBuf;
@@ -32,7 +32,6 @@ enum OutputFormat {
 
 // Constants
 const CHUNK_SIZE: usize = 100;
-const GRID_SIZE: usize = 10; // Tests are arranged in a 10x10 grid
 const SEPARATOR_WIDTH: usize = 60;
 
 /// Print a separator line
@@ -43,14 +42,12 @@ fn print_separator() {
 /// Print chunk header
 fn print_chunk_header(chunk_idx: usize, total_chunks: usize, chunk_len: usize) {
     println!(
-        "{} {} Chunk {}/{} ({} tests in {}x{} grid)",
+        "{} {} Chunk {}/{} ({} tests)",
         "═".repeat(SEPARATOR_WIDTH).dimmed(),
         "→".blue().bold(),
         chunk_idx + 1,
         total_chunks,
         chunk_len,
-        GRID_SIZE,
-        GRID_SIZE
     );
     print_separator();
     println!();
@@ -242,10 +239,12 @@ fn main() -> Result<()> {
                     chunk.len()
                 );
             }
-            for (test_index, test_file) in chunk.iter().enumerate() {
+            for test_file in chunk.iter() {
                 match TestSpec::from_file(test_file, false) {
                     Ok(test) => {
-                        let offset = calculate_test_offset_default(test_index, chunk.len());
+                        let offset =
+                            calculate_test_offsets_for_batch_default(std::slice::from_ref(&test))
+                                [0];
                         let max_tick = test.max_tick();
                         let assertions = test
                             .timeline
@@ -359,8 +358,8 @@ fn main() -> Result<()> {
             CHUNK_SIZE
         );
         println!(
-            "  Each chunk uses a {}x{} grid around spawn\n",
-            GRID_SIZE, GRID_SIZE
+            "  Each chunk is laid out from cleanup regions with {} block padding\n",
+            8
         );
     } else {
         eprintln!("Running {} tests...", format_number(total_tests));
@@ -377,23 +376,12 @@ fn main() -> Result<()> {
         }
 
         let mut tests_with_offsets = Vec::new();
-        for (test_index, test_file) in chunk.iter().enumerate() {
+        let mut chunk_specs = Vec::new();
+        for test_file in chunk.iter() {
             match TestSpec::from_file(test_file, false) {
                 Ok(test) => {
                     test_specs_map.insert(test.name.clone(), (test.clone(), test_file.clone()));
-                    // Calculate offset within this chunk (10x10 grid)
-                    let offset = calculate_test_offset_default(test_index, chunk.len());
-                    if verbose {
-                        println!(
-                            "  {} Grid position: {} (offset: [{}, {}, {}])",
-                            "→".blue(),
-                            format!("[{}/{}]", test_index + 1, chunk.len()).dimmed(),
-                            offset[0],
-                            offset[1],
-                            offset[2]
-                        );
-                    }
-                    tests_with_offsets.push((test, offset));
+                    chunk_specs.push(test);
                 }
                 Err(e) => {
                     eprintln!(
@@ -405,6 +393,21 @@ fn main() -> Result<()> {
                     std::process::exit(1);
                 }
             }
+        }
+
+        let offsets = calculate_test_offsets_for_batch_default(&chunk_specs);
+        for (test_index, (test, offset)) in chunk_specs.into_iter().zip(offsets).enumerate() {
+            if verbose {
+                println!(
+                    "  {} Test {} (offset: [{}, {}, {}])",
+                    "→".blue(),
+                    format!("[{}/{}]", test_index + 1, chunk.len()).dimmed(),
+                    offset[0],
+                    offset[1],
+                    offset[2]
+                );
+            }
+            tests_with_offsets.push((test, offset));
         }
 
         if verbose {

@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use flint_core::loader::TestLoader;
-use flint_core::spatial::calculate_test_offset_default;
+use flint_core::spatial::pair_tests_with_offsets;
 use flint_core::test_spec::TestSpec;
 
 use super::{
@@ -158,8 +158,7 @@ impl TestExecutor {
                     .send_command(&format!("say Running test: {}", test.name))?;
             }
 
-            let offset = calculate_test_offset_default(0, 1);
-            let tests_with_offsets = vec![(test, offset)];
+            let tests_with_offsets = pair_tests_with_offsets(vec![test]);
             let output = self.run_tests_parallel(&tests_with_offsets, step_mode)?;
 
             for result in &output.results {
@@ -184,14 +183,13 @@ impl TestExecutor {
                 all_test_files.len()
             ))?;
 
-        let mut tests_with_offsets = Vec::new();
-        for (idx, test_file) in all_test_files.iter().enumerate() {
+        let mut specs = Vec::new();
+        for test_file in all_test_files {
             if let Ok(test) = TestSpec::from_file(test_file, false) {
-                let offset = calculate_test_offset_default(idx, all_test_files.len());
-                tests_with_offsets.push((test, offset));
+                specs.push(test);
             }
         }
-
+        let tests_with_offsets = pair_tests_with_offsets(specs);
         let output = self.run_tests_parallel(&tests_with_offsets, false)?;
 
         let passed = output.results.iter().filter(|r| r.success).count();
@@ -224,14 +222,13 @@ impl TestExecutor {
                 tags
             ))?;
 
-        let mut tests_with_offsets = Vec::new();
-        for (idx, test_file) in test_files.iter().enumerate() {
+        let mut specs = Vec::new();
+        for test_file in &test_files {
             if let Ok(test) = TestSpec::from_file(test_file, false) {
-                let offset = calculate_test_offset_default(idx, test_files.len());
-                tests_with_offsets.push((test, offset));
+                specs.push(test);
             }
         }
-
+        let tests_with_offsets = pair_tests_with_offsets(specs);
         let output = self.run_tests_parallel(&tests_with_offsets, false)?;
 
         let passed = output.results.iter().filter(|r| r.success).count();
