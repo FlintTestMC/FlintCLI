@@ -10,6 +10,8 @@ const INIT_WAIT_DELAY_MS: u64 = 100;
 const GAME_STATE_WAIT_ATTEMPTS: u32 = 100;
 const WORLD_SYNC_DELAY_MS: u64 = 500;
 
+type ChatReceiver = std::sync::mpsc::Receiver<(Option<String>, String)>;
+
 #[derive(Clone, Component)]
 struct State {
     client_handle: Arc<RwLock<Option<Client>>>,
@@ -31,7 +33,7 @@ impl Default for State {
 pub struct TestBot {
     client: Option<Arc<RwLock<Option<Client>>>>,
     in_game: Option<Arc<AtomicBool>>,
-    chat_rx: Option<Arc<parking_lot::Mutex<std::sync::mpsc::Receiver<(Option<String>, String)>>>>,
+    chat_rx: Option<Arc<parking_lot::Mutex<ChatReceiver>>>,
 }
 
 impl TestBot {

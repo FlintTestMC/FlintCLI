@@ -179,9 +179,9 @@ pub fn sprint_ticks(bot: &mut TestBot, ticks: u32, verbose: bool) -> Result<u64>
             if message.contains("Sprint completed") {
                 // Try to extract ms per tick
                 // Format: "... or X ms per tick"
-                if let Some(ms_part) = message.split("or ").nth(1) {
-                    if let Some(ms_str) = ms_part.split(" ms per tick").next() {
-                        if let Ok(ms) = ms_str.trim().parse::<f64>() {
+                if let Some(ms_part) = message.split("or ").nth(1)
+                    && let Some(ms_str) = ms_part.split(" ms per tick").next()
+                        && let Ok(ms) = ms_str.trim().parse::<f64>() {
                             let ms_rounded = ms.ceil() as u64;
                             if verbose {
                                 println!(
@@ -194,8 +194,6 @@ pub fn sprint_ticks(bot: &mut TestBot, ticks: u32, verbose: bool) -> Result<u64>
                             // Return total time: ms per tick * number of ticks
                             return Ok(ms_rounded * ticks as u64);
                         }
-                    }
-                }
                 // If we found the message but couldn't parse, use default
                 if verbose {
                     println!(

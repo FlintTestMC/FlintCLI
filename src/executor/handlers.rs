@@ -94,8 +94,8 @@ impl TestExecutor {
         let pattern_lower = pattern.to_lowercase();
         let mut found = 0;
         for test_file in all_test_files {
-            if let Ok(test) = TestSpec::from_file(test_file, false) {
-                if test.name.to_lowercase().contains(&pattern_lower) {
+            if let Ok(test) = TestSpec::from_file(test_file, false)
+                && test.name.to_lowercase().contains(&pattern_lower) {
                     let tags = if test.tags.is_empty() {
                         String::new()
                     } else {
@@ -106,7 +106,6 @@ impl TestExecutor {
                     found += 1;
                     std::thread::sleep(std::time::Duration::from_millis(TEST_RESULT_DELAY_MS));
                 }
-            }
         }
         if found == 0 {
             self.bot
@@ -129,23 +128,21 @@ impl TestExecutor {
         // First pass: look for exact match
         let mut found_test = None;
         for test_file in all_test_files {
-            if let Ok(test) = TestSpec::from_file(test_file, false) {
-                if test.name.to_lowercase() == name_lower {
+            if let Ok(test) = TestSpec::from_file(test_file, false)
+                && test.name.to_lowercase() == name_lower {
                     found_test = Some(test);
                     break;
                 }
-            }
         }
 
         // Second pass: fall back to partial match if no exact match
         if found_test.is_none() {
             for test_file in all_test_files {
-                if let Ok(test) = TestSpec::from_file(test_file, false) {
-                    if test.name.to_lowercase().contains(&name_lower) {
+                if let Ok(test) = TestSpec::from_file(test_file, false)
+                    && test.name.to_lowercase().contains(&name_lower) {
                         found_test = Some(test);
                         break;
                     }
-                }
             }
         }
 

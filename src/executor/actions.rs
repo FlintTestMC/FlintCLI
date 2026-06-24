@@ -237,8 +237,8 @@ pub fn execute_action(
                             }
                             return Ok(ActionOutcome::AssertFailed(AssertFailure {
                                 tick,
-                                expected: check.is.clone().map(|i| InfoType::Item(i)).unwrap_or_else(|| InfoType::String("empty".to_string())),
-                                actual: actual.clone().map(|i| InfoType::Item(i)).unwrap_or_else(|| InfoType::String("empty".to_string())),
+                                expected: check.is.clone().map(InfoType::Item).unwrap_or_else(|| InfoType::String("empty".to_string())),
+                                actual: actual.clone().map(InfoType::Item).unwrap_or_else(|| InfoType::String("empty".to_string())),
                                 position: AssertPosition::from_array([0, 0, 0]),
                                 error_message: "Inventory slot content was different".to_string(),
                                 execution_time_ms: None,

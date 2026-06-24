@@ -191,8 +191,8 @@ impl FlintPlayer for MinecraftPlayer {
                 format!("minecraft:{}", item.id)
             };
 
-            if let Ok(Some(actual_block_str)) = self.bot.get_block(target_world) {
-                if actual_block_str.to_lowercase().contains("water") {
+            if let Ok(Some(actual_block_str)) = self.bot.get_block(target_world)
+                && actual_block_str.to_lowercase().contains("water") {
                     let id_lower = block_id.to_lowercase();
                     if id_lower.contains("pane")
                         || id_lower.contains("fence")
@@ -203,7 +203,6 @@ impl FlintPlayer for MinecraftPlayer {
                         block_id = format!("{}[waterlogged=true]", block_id);
                     }
                 }
-            }
 
             let cmd = format!("setblock {} {} {} {}", target_world[0], target_world[1], target_world[2], block_id);
             let _ = self.bot.send_command(&cmd);
