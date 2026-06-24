@@ -462,7 +462,7 @@ fn main() -> Result<()> {
                         failure.tick,
                     );
                     let base_url = std::env::var("FLINT_VIZ_URL")
-                        .unwrap_or_else(|_| "https://flinttestmc.github.io/FlintViz".to_string());
+                        .unwrap_or_else(|_| "https://flinttestmc.github.io/FlintViz/#".to_string());
                     if let Ok(url) = flint_core::viz_link::failure_url(&payload, &base_url) {
                         println!("  [Visualizer Link for {}]:", test_name.bold());
                         println!("  {}", url.underline().blue());
