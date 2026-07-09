@@ -23,16 +23,6 @@ pub fn max_extent_from_origin(tests: &[(TestSpec, [i32; 3])]) -> i32 {
     max
 }
 
-/// World position to teleport the bot so a test's chunks load and simulate reliably.
-pub fn test_focus_pos(test: &TestSpec, offset: [i32; 3]) -> [i32; 3] {
-    let region = test.cleanup_region();
-    let cx = offset[0] + (region[0][0] + region[1][0]) / 2;
-    let cz = offset[2] + (region[0][2] + region[1][2]) / 2;
-    let y_top = region[0][1].max(region[1][1]);
-    let cy = (offset[1] + y_top + 2).clamp(-60, 320);
-    [cx, cy, cz]
-}
-
 /// Split a batch so every sub-batch fits within the server's simulation distance from the
 /// layout center (origin). Tests stay parallel within each sub-batch.
 pub fn split_tests_by_simulation_distance(
@@ -50,16 +40,12 @@ pub fn split_tests_by_simulation_distance(
     for test in tests {
         current.push(test);
         let offsets = calculate_test_offsets_for_batch_default(&current);
-        let paired: Vec<(TestSpec, [i32; 3])> = current
-            .iter()
-            .cloned()
-            .zip(offsets)
-            .collect();
+        let paired: Vec<(TestSpec, [i32; 3])> = current.iter().cloned().zip(offsets).collect();
 
         if max_extent_from_origin(&paired) > max_radius && current.len() > 1 {
-            current.pop();
+            let overflow = current.pop().expect("current has at least two tests");
             batches.push(current);
-            current = vec![paired.last().unwrap().0.clone()];
+            current = vec![overflow];
         }
     }
 
@@ -73,6 +59,7 @@ pub fn split_tests_by_simulation_distance(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flint_core::test_spec::ActionType;
     use flint_core::test_spec::{CleanupSpec, SetupSpec};
 
     fn test_spec(name: &str, region: [[i32; 3]; 2]) -> TestSpec {
@@ -117,5 +104,43 @@ mod tests {
         let batches = split_tests_by_simulation_distance(tests, 6);
         assert!(batches.len() > 1);
         assert_eq!(batches.iter().map(|b| b.len()).sum::<usize>(), 20);
+    }
+
+    #[test]
+    fn split_keeps_player_timelines_in_parallel_batch() {
+        let mut first = test_spec("first", [[0, 0, 0], [1, 1, 1]]);
+        first.timeline.push(flint_core::test_spec::TimelineEntry {
+            at: flint_core::test_spec::TickSpec::Single(0),
+            action_type: ActionType::Interact { item: None },
+        });
+        let mut second = test_spec("second", [[0, 0, 0], [1, 1, 1]]);
+        second.timeline.push(flint_core::test_spec::TimelineEntry {
+            at: flint_core::test_spec::TickSpec::Single(0),
+            action_type: ActionType::Tp {
+                entity_alias: "player".to_string(),
+                pos: [0.0, 0.0, 0.0],
+                rot: None,
+            },
+        });
+
+        let batches = split_tests_by_simulation_distance(vec![first, second], 32);
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].len(), 2);
+    }
+
+    #[test]
+    fn player_timeline_stays_with_block_timelines() {
+        let block_before = test_spec("before", [[0, 0, 0], [1, 1, 1]]);
+        let mut player = test_spec("player", [[0, 0, 0], [1, 1, 1]]);
+        player.timeline.push(flint_core::test_spec::TimelineEntry {
+            at: flint_core::test_spec::TickSpec::Single(0),
+            action_type: ActionType::Interact { item: None },
+        });
+        let block_after = test_spec("after", [[0, 0, 0], [1, 1, 1]]);
+
+        let batches =
+            split_tests_by_simulation_distance(vec![block_before, player, block_after], 32);
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].len(), 3);
     }
 }

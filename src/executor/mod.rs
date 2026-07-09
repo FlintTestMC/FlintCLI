@@ -9,7 +9,6 @@ mod recorder;
 mod tick;
 
 use crate::bot::TestBot;
-use crate::spatial_batch::test_focus_pos;
 use adapter::MinecraftWorld;
 use anyhow::Result;
 use colored::Colorize;
@@ -38,7 +37,6 @@ pub struct TestRunOutput {
 
 pub struct TestExecutor {
     pub bot: TestBot,
-    action_delay_ms: u64,
     recorder: Option<recorder::RecorderState>,
     verbose: bool,
     quiet: bool,
@@ -54,7 +52,6 @@ impl Default for TestExecutor {
     fn default() -> Self {
         Self {
             bot: TestBot::new(),
-            action_delay_ms: COMMAND_DELAY_MS,
             recorder: None,
             verbose: false,
             quiet: false,
@@ -71,14 +68,6 @@ impl Default for TestExecutor {
 impl TestExecutor {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    pub fn set_chunk_load_delay(&mut self, delay_ms: u64) {
-        self.bot.set_chunk_load_delay_ms(delay_ms);
-    }
-
-    pub fn set_action_delay(&mut self, delay_ms: u64) {
-        self.action_delay_ms = delay_ms;
     }
 
     pub fn set_verbose(&mut self, verbose: bool) {
@@ -106,14 +95,19 @@ impl TestExecutor {
         self.bot.connect(server)
     }
 
+    /// Start a recording session before or during interactive mode.
+    pub fn start_recording(
+        &mut self,
+        test_name: &str,
+        test_loader: &TestLoader,
+        player_name: Option<String>,
+    ) -> Result<()> {
+        self.handle_record_start(test_name, test_loader, player_name)
+    }
+
     /// Helper to get a mutable reference to the recorder, or return an error
     fn require_recorder(&mut self) -> Option<&mut recorder::RecorderState> {
         self.recorder.as_mut()
-    }
-
-    /// Helper to apply the standard command delay
-    fn delay(&self) {
-        std::thread::sleep(std::time::Duration::from_millis(self.action_delay_ms));
     }
 
     /// Helper to apply offset to a position
@@ -139,23 +133,6 @@ impl TestExecutor {
             self.bot.send_command(&cmd)?;
         }
         std::thread::sleep(std::time::Duration::from_millis(COMMAND_DELAY_MS));
-        Ok(())
-    }
-
-    fn sync_active_regions(
-        &self,
-        tests_with_offsets: &[(TestSpec, [i32; 3])],
-        tests_cleaned: &[bool],
-        test_max_ticks: &[u32],
-        current_tick: u32,
-    ) -> Result<()> {
-        for (idx, (test, offset)) in tests_with_offsets.iter().enumerate() {
-            if tests_cleaned[idx] || current_tick > test_max_ticks[idx] {
-                continue;
-            }
-            self.bot.ensure_near_force(test_focus_pos(test, *offset))?;
-        }
-        self.bot.ensure_near_force([0, 64, 0])?;
         Ok(())
     }
 
@@ -271,6 +248,10 @@ impl TestExecutor {
                     }
                     "!assert_changes" => {
                         self.handle_record_assert_changes()?;
+                    }
+
+                    "!use" => {
+                        self.handle_record_use(&args)?;
                     }
 
                     "!tick" | "!next" => {
@@ -455,7 +436,6 @@ impl TestExecutor {
         }
         std::thread::sleep(std::time::Duration::from_millis(CLEANUP_DELAY_MS));
 
-        self.bot.reset_teleport_cache();
         self.forceload_regions(tests_with_offsets, true)?;
 
         // Freeze time globally
@@ -510,11 +490,11 @@ impl TestExecutor {
         // Initialize per-test worlds and players using the trait model
         let mut worlds: Vec<MinecraftWorld> = tests_with_offsets
             .iter()
-            .map(|(test, offset)| MinecraftWorld {
+            .map(|(_test, offset)| MinecraftWorld {
                 bot: self.bot.clone(),
                 offset: *offset,
-                focus: test_focus_pos(test, *offset),
                 current_tick: 0,
+                entities: std::collections::HashMap::new(),
             })
             .collect();
 
@@ -673,12 +653,6 @@ impl TestExecutor {
 
             // Advance to next tick.
             if let Some((scan_min, scan_max)) = scan_bounds {
-                self.sync_active_regions(
-                    tests_with_offsets,
-                    &tests_cleaned,
-                    &test_max_ticks,
-                    current_tick,
-                )?;
                 tick::step_tick(&mut self.bot, verbose)?;
                 std::thread::sleep(std::time::Duration::from_millis(CLEANUP_DELAY_MS));
                 let world_blocks = self.scan_region(scan_min, scan_max)?;
@@ -688,12 +662,6 @@ impl TestExecutor {
                 current_tick += 1;
             } else if current_tick < aggregate.max_tick {
                 if stepping_mode {
-                    self.sync_active_regions(
-                    tests_with_offsets,
-                    &tests_cleaned,
-                    &test_max_ticks,
-                    current_tick,
-                )?;
                     tick::step_tick(&mut self.bot, verbose)?;
                     std::thread::sleep(std::time::Duration::from_millis(CLEANUP_DELAY_MS));
                     current_tick += 1;
@@ -707,13 +675,6 @@ impl TestExecutor {
                     } else {
                         aggregate.max_tick - current_tick
                     };
-
-                    self.sync_active_regions(
-                    tests_with_offsets,
-                    &tests_cleaned,
-                    &test_max_ticks,
-                    current_tick,
-                )?;
 
                     let sprint_time_ms = if ticks_to_sprint == 1 {
                         tick::step_tick(&mut self.bot, verbose)?
@@ -869,15 +830,7 @@ impl TestExecutor {
         entry: &TimelineEntry,
         value_idx: usize,
     ) -> Result<ActionOutcome> {
-        actions::execute_action(
-            world,
-            player,
-            tick,
-            entry,
-            value_idx,
-            self.action_delay_ms,
-            self.verbose,
-        )
+        actions::execute_action(world, player, tick, entry, value_idx, self.verbose)
     }
 }
 

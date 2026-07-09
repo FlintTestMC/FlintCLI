@@ -6,7 +6,7 @@ use flint_core::spatial::pair_tests_with_offsets;
 use flint_core::test_spec::TestSpec;
 
 use super::{
-    COMMAND_DELAY_MS, DEFAULT_TESTS_DIR, TEST_RESULT_DELAY_MS, TestExecutor, block, recorder,
+    COMMAND_DELAY_MS, DEFAULT_TESTS_DIR, TEST_RESULT_DELAY_MS, TestExecutor, block, recorder, tick,
 };
 
 /// Parse command parts from a chat message
@@ -52,6 +52,9 @@ impl TestExecutor {
             .send_command("say Recorder: !record <name>, !tick/!next, !save, !cancel")?;
         self.bot
             .send_command("say Recorder actions: !assert <x> <y> <z>, !assert_changes")?;
+        self.bot.send_command(
+            "say Recorder actions: !use [item] - record tp + interact at player pose",
+        )?;
         self.bot.send_command(
             "say Recorder actions: !pos1 <x> <y> <z>, !pos - Allow to use assert for a 3d area",
         )?;
@@ -249,13 +252,18 @@ impl TestExecutor {
         // Default to @p if nothing works
         recorder_state.player_name = player_name.or_else(|| Some("@p".to_string()));
 
-        // Get bot position to set scan center
-        let scan_center = match self.bot.get_position() {
-            Ok(pos) => pos,
+        // Get tracked player position to set scan center.
+        let scan_center = match self.query_record_player_pose(&recorder_state) {
+            Ok((pos, _)) => [
+                pos[0].floor() as i32,
+                pos[1].floor() as i32,
+                pos[2].floor() as i32,
+            ],
             Err(_) => {
-                self.bot
-                    .send_command("say Warning: Could not get bot position, using spawn")?;
-                [0, 64, 0]
+                self.bot.send_command(
+                    "say Warning: Could not get player position, using bot position",
+                )?;
+                self.bot.get_position().unwrap_or([0, 64, 0])
             }
         };
 
@@ -276,9 +284,8 @@ impl TestExecutor {
             .send_command(&format!("say Recording started: {}", test_name))?;
         self.bot
             .send_command("say Time frozen. Block changes will be detected automatically!")?;
-        self.bot.send_command(
-            "say Commands: !assert (add check), !tick (step game tick), !save, !cancel",
-        )?;
+        self.bot
+            .send_command("say Commands: !assert, !use, !tick, !save, !cancel")?;
 
         Ok(())
     }
@@ -297,8 +304,7 @@ impl TestExecutor {
         self.handle_record_snapshot()?;
 
         // Step the game tick
-        self.bot.send_command("tick step")?;
-        self.delay();
+        tick::step_tick(&mut self.bot, false)?;
 
         // Now advance our recording tick counter
         let recorder = self.require_recorder().unwrap();
@@ -393,6 +399,43 @@ impl TestExecutor {
         Ok(())
     }
 
+    pub(super) fn handle_record_use(&mut self, args: &[String]) -> Result<()> {
+        if self.recorder.is_none() {
+            self.bot
+                .send_command("say No recording in progress. Use !record <name> to start.")?;
+            return Ok(());
+        }
+
+        let item = args.first().cloned();
+        if args.len() > 1 {
+            self.bot.send_command("say Usage: !use [item]")?;
+            return Ok(());
+        }
+
+        self.handle_record_snapshot()?;
+
+        let (pos, rot) = {
+            let recorder = self.recorder.as_ref().unwrap();
+            self.query_record_player_pose(recorder)?
+        };
+
+        let recorder = self.recorder.as_mut().unwrap();
+        recorder.record_use(pos, Some(rot), item.clone());
+
+        self.bot.send_command(&format!(
+            "say Recorded use at [{:.2}, {:.2}, {:.2}] rot [{:.1}, {:.1}]{}",
+            pos[0],
+            pos[1],
+            pos[2],
+            rot[0],
+            rot[1],
+            item.as_ref()
+                .map(|item| format!(" with {item}"))
+                .unwrap_or_default()
+        ))?;
+        Ok(())
+    }
+
     pub(super) fn handle_record_save(&mut self) -> Result<bool> {
         let Some(recorder) = self.recorder.take() else {
             self.bot.send_command("say No recording in progress.")?;
@@ -436,7 +479,7 @@ impl TestExecutor {
     }
 
     pub(super) fn handle_record_snapshot(&mut self) -> Result<()> {
-        let recorder = match self.recorder.as_mut() {
+        let recorder = match self.recorder.as_ref() {
             Some(r) => r,
             None => {
                 self.bot.send_command("say No recording in progress.")?;
@@ -444,8 +487,8 @@ impl TestExecutor {
             }
         };
 
-        let scan_center = recorder.scan_center.unwrap_or([0, 64, 0]);
         let scan_radius = recorder.scan_radius;
+        let scan_center = recorder.scan_center.unwrap_or([0, 64, 0]);
 
         self.bot.send_command("say Scanning for block changes...")?;
 
@@ -489,7 +532,6 @@ impl TestExecutor {
                 .unwrap_or(true)
             {
                 // Was a block, now is air
-                let recorder = self.recorder.as_mut().unwrap();
                 recorder.record_remove(*pos);
                 changes += 1;
             }
@@ -518,4 +560,95 @@ impl TestExecutor {
         }
         Ok(())
     }
+
+    fn query_record_player_pose(
+        &self,
+        recorder: &recorder::RecorderState,
+    ) -> Result<([f64; 3], [f32; 2])> {
+        let target = recorder.player_name.as_deref().unwrap_or("@p");
+        let pos = self.query_entity_vec3(target, "Pos")?;
+        let rot = self.query_entity_vec2_f32(target, "Rotation")?;
+        Ok((pos, rot))
+    }
+
+    fn query_entity_vec3(&self, target: &str, path: &str) -> Result<[f64; 3]> {
+        let values = self.query_entity_numbers(target, path)?;
+        if values.len() < 3 {
+            anyhow::bail!("entity {path} query returned fewer than 3 values");
+        }
+        Ok([values[0], values[1], values[2]])
+    }
+
+    fn query_entity_vec2_f32(&self, target: &str, path: &str) -> Result<[f32; 2]> {
+        let values = self.query_entity_numbers(target, path)?;
+        if values.len() < 2 {
+            anyhow::bail!("entity {path} query returned fewer than 2 values");
+        }
+        Ok([values[0] as f32, values[1] as f32])
+    }
+
+    fn query_entity_numbers(&self, target: &str, path: &str) -> Result<Vec<f64>> {
+        validate_entity_target(target)?;
+        while self
+            .bot
+            .recv_chat_timeout(std::time::Duration::from_millis(
+                tick::CHAT_DRAIN_TIMEOUT_MS,
+            ))
+            .is_some()
+        {}
+        self.bot
+            .send_command(&format!("data get entity {target} {path}"))?;
+
+        let timeout = std::time::Duration::from_secs(3);
+        let started = std::time::Instant::now();
+        while started.elapsed() < timeout {
+            if let Some((_, message)) = self
+                .bot
+                .recv_chat_timeout(std::time::Duration::from_millis(tick::CHAT_POLL_TIMEOUT_MS))
+            {
+                if message.contains(path) || message.contains("entity data") {
+                    let values = parse_numbers_after_colon(&message);
+                    if !values.is_empty() {
+                        return Ok(values);
+                    }
+                }
+                if message.contains("No entity was found") || message.contains("Found no elements")
+                {
+                    anyhow::bail!("failed to query entity {target} {path}: {message}");
+                }
+            }
+        }
+
+        anyhow::bail!("timed out querying entity {target} {path}")
+    }
+}
+
+fn validate_entity_target(target: &str) -> Result<()> {
+    if target.is_empty()
+        || target
+            .chars()
+            .any(|c| c.is_whitespace() || c == '/' || c == ';')
+    {
+        anyhow::bail!("invalid player/entity target for recording: {target}");
+    }
+    Ok(())
+}
+
+fn parse_numbers_after_colon(message: &str) -> Vec<f64> {
+    let value_part = message
+        .split_once(':')
+        .map(|(_, value)| value)
+        .unwrap_or(message);
+    value_part
+        .split(|c: char| {
+            !(c.is_ascii_digit() || c == '-' || c == '+' || c == '.' || c == 'e' || c == 'E')
+        })
+        .filter_map(|part| {
+            if part.is_empty() || part == "-" || part == "+" || part == "." {
+                None
+            } else {
+                part.parse::<f64>().ok()
+            }
+        })
+        .collect()
 }

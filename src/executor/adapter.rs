@@ -1,10 +1,11 @@
-use crate::bot::TestBot;
+use crate::bot::{TestBot, slot_to_minecraft_name};
 use crate::executor::block;
 use crate::executor::tick;
 use anyhow::Result;
 use flint_core::BlockPos;
-use flint_core::test_spec::{Block, BlockFace, GameMode, Item, PlayerSlot};
-use flint_core::traits::{FlintAdapter, FlintPlayer, FlintWorld, ServerInfo};
+use flint_core::test_spec::{Block, GameMode, Item, PlayerSlot};
+use flint_core::traits::{EntityState, FlintAdapter, FlintPlayer, FlintWorld, ServerInfo};
+use std::collections::HashMap;
 
 #[allow(dead_code)]
 pub struct MinecraftAdapter {
@@ -27,8 +28,8 @@ impl FlintAdapter for MinecraftAdapter {
         Box::new(MinecraftWorld {
             bot: self.bot.clone(),
             offset: [0, 0, 0],
-            focus: [0, 64, 0],
             current_tick: 0,
+            entities: HashMap::new(),
         })
     }
 
@@ -42,8 +43,14 @@ impl FlintAdapter for MinecraftAdapter {
 pub struct MinecraftWorld {
     pub bot: TestBot,
     pub offset: [i32; 3],
-    pub focus: [i32; 3],
     pub current_tick: u64,
+    pub(crate) entities: HashMap<String, MinecraftEntity>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct MinecraftEntity {
+    entity_type: String,
+    tag: String,
 }
 
 impl MinecraftWorld {
@@ -55,13 +62,30 @@ impl MinecraftWorld {
         ]
     }
 
-    pub fn ensure_focus(&self) -> Result<()> {
-        self.bot.ensure_near(self.focus)
+    fn entity_tag(alias: &str) -> Option<String> {
+        if alias == "player"
+            || alias.is_empty()
+            || alias
+                .chars()
+                .any(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.'))
+        {
+            return None;
+        }
+        Some(format!("flintmc.entity.{alias}"))
+    }
+
+    fn entity_selector(entity: &MinecraftEntity) -> String {
+        format!("@e[tag={},type={},limit=1]", entity.tag, entity.entity_type)
     }
 }
 
 impl Drop for MinecraftWorld {
     fn drop(&mut self) {
+        for entity in self.entities.values() {
+            let _ = self
+                .bot
+                .send_command(&format!("kill @e[tag={}]", entity.tag));
+        }
         let _ = self.bot.send_command("tick unfreeze");
         std::thread::sleep(std::time::Duration::from_millis(tick::COMMAND_DELAY_MS));
     }
@@ -80,7 +104,6 @@ impl FlintWorld for MinecraftWorld {
 
     fn get_block(&self, pos: BlockPos) -> Block {
         let world_pos = self.world_pos(pos);
-        let _ = self.bot.ensure_near(world_pos);
         for _ in 0..10 {
             if let Ok(Some(actual_block_str)) = self.bot.get_block(world_pos) {
                 let normalized_id = block::extract_block_id(&actual_block_str);
@@ -105,50 +128,216 @@ impl FlintWorld for MinecraftWorld {
             "setblock {} {} {} {}",
             world_pos[0], world_pos[1], world_pos[2], block_spec
         );
-        let _ = self.bot.send_command(&cmd);
-        std::thread::sleep(std::time::Duration::from_millis(tick::COMMAND_DELAY_MS));
+        let expected = block.clone();
+        if let Err(error) = self.bot.send_command(&cmd).and_then(|()| {
+            self.bot.wait_until("block synchronization", || {
+                let Ok(Some(actual_block_str)) = self.bot.get_block(world_pos) else {
+                    return false;
+                };
+                let actual = block::make_block(&block::extract_block_id(&actual_block_str));
+                actual.id == expected.id && block::properties_match(&actual, &expected)
+            })
+        }) {
+            tracing::error!(
+                "Failed to set block at [{}, {}, {}] to {}: {}",
+                world_pos[0],
+                world_pos[1],
+                world_pos[2],
+                block_spec,
+                error
+            );
+        }
+    }
+
+    fn summon_entity(&mut self, alias: &str, entity_type: &str, pos: [f64; 3], nbt: Option<&str>) {
+        let Some(tag) = Self::entity_tag(alias) else {
+            tracing::error!("Invalid entity alias for summon: {}", alias);
+            return;
+        };
+        if entity_type
+            .chars()
+            .any(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == ':' || c == '.'))
+        {
+            tracing::error!("Invalid entity type for summon: {}", entity_type);
+            return;
+        }
+        let world_pos = [
+            pos[0] + f64::from(self.offset[0]),
+            pos[1] + f64::from(self.offset[1]),
+            pos[2] + f64::from(self.offset[2]),
+        ];
+        let _ = self.bot.send_command(&format!("kill @e[tag={}]", tag));
+        let nbt = summon_nbt_with_tag(nbt, &tag);
+        let cmd = format!(
+            "summon {} {} {} {} {}",
+            entity_type, world_pos[0], world_pos[1], world_pos[2], nbt
+        );
+        if let Err(error) = self.bot.send_command(&cmd) {
+            tracing::error!("Failed to summon entity alias {}: {}", alias, error);
+            return;
+        }
+        self.entities.insert(
+            alias.to_string(),
+            MinecraftEntity {
+                entity_type: entity_type.to_string(),
+                tag,
+            },
+        );
+    }
+
+    fn teleport_entity(&mut self, alias: &str, pos: [f64; 3], rot: Option<[f32; 2]>) {
+        let Some(entity) = self.entities.get(alias) else {
+            tracing::error!("Cannot teleport unknown entity alias: {}", alias);
+            return;
+        };
+        let selector = Self::entity_selector(entity);
+        let world_pos = [
+            pos[0] + f64::from(self.offset[0]),
+            pos[1] + f64::from(self.offset[1]),
+            pos[2] + f64::from(self.offset[2]),
+        ];
+        let cmd = match rot {
+            Some([yaw, pitch]) => format!(
+                "tp {} {} {} {} {} {}",
+                selector, world_pos[0], world_pos[1], world_pos[2], yaw, pitch
+            ),
+            None => format!(
+                "tp {} {} {} {}",
+                selector, world_pos[0], world_pos[1], world_pos[2]
+            ),
+        };
+        if let Err(error) = self.bot.send_command(&cmd) {
+            tracing::error!("Failed to teleport entity alias {}: {}", alias, error);
+        }
+    }
+
+    fn get_entity(&self, alias: &str) -> EntityState {
+        let Some(entity) = self.entities.get(alias) else {
+            return EntityState::default();
+        };
+        let selector = Self::entity_selector(entity);
+        let Ok(values) = query_entity_numbers(&self.bot, &selector, "Pos") else {
+            return EntityState {
+                exists: false,
+                entity_type: Some(entity.entity_type.clone()),
+                pos: None,
+            };
+        };
+        let pos = values.get(..3).map(|pos| {
+            [
+                pos[0] - f64::from(self.offset[0]),
+                pos[1] - f64::from(self.offset[1]),
+                pos[2] - f64::from(self.offset[2]),
+            ]
+        });
+        EntityState {
+            exists: true,
+            entity_type: Some(entity.entity_type.clone()),
+            pos,
+        }
     }
 
     fn create_player(&mut self) -> Box<dyn FlintPlayer> {
         Box::new(MinecraftPlayer {
             bot: self.bot.clone(),
+            inventory_owner: self.bot.allocate_inventory_owner(),
             selected_hotbar: 1,
             inventory: std::collections::HashMap::new(),
+            pose: None,
             offset: self.offset,
             game_mode: GameMode::Creative,
         })
     }
 }
 
+fn query_entity_numbers(bot: &TestBot, selector: &str, path: &str) -> Result<Vec<f64>> {
+    while bot
+        .recv_chat_timeout(std::time::Duration::from_millis(
+            tick::CHAT_DRAIN_TIMEOUT_MS,
+        ))
+        .is_some()
+    {}
+
+    bot.send_command(&format!("data get entity {selector} {path}"))?;
+    let timeout = std::time::Duration::from_secs(3);
+    let started = std::time::Instant::now();
+
+    while started.elapsed() < timeout {
+        if let Some((_, message)) =
+            bot.recv_chat_timeout(std::time::Duration::from_millis(tick::CHAT_POLL_TIMEOUT_MS))
+        {
+            if message.contains("No entity was found") || message.contains("Found no elements") {
+                anyhow::bail!("entity query failed: {message}");
+            }
+            if message.contains(path) || message.contains("entity data") {
+                let values = parse_numbers_after_colon(&message);
+                if !values.is_empty() {
+                    return Ok(values);
+                }
+            }
+        }
+    }
+
+    anyhow::bail!("timed out querying entity {selector} {path}")
+}
+
+fn parse_numbers_after_colon(message: &str) -> Vec<f64> {
+    let value_part = message
+        .split_once(':')
+        .map(|(_, value)| value)
+        .unwrap_or(message);
+    value_part
+        .split(|c: char| {
+            !(c.is_ascii_digit() || c == '-' || c == '+' || c == '.' || c == 'e' || c == 'E')
+        })
+        .filter_map(|part| {
+            if part.is_empty() || part == "-" || part == "+" || part == "." {
+                None
+            } else {
+                part.parse::<f64>().ok()
+            }
+        })
+        .collect()
+}
+
+fn summon_nbt_with_tag(nbt: Option<&str>, tag: &str) -> String {
+    match nbt.map(str::trim).filter(|nbt| !nbt.is_empty()) {
+        None => format!("{{Tags:[\"{tag}\"]}}"),
+        Some("{}") => format!("{{Tags:[\"{tag}\"]}}"),
+        Some(nbt) if nbt.starts_with('{') && nbt.ends_with('}') => {
+            let inner = &nbt[1..nbt.len() - 1];
+            if inner.trim().is_empty() {
+                format!("{{Tags:[\"{tag}\"]}}")
+            } else {
+                format!("{{{inner},Tags:[\"{tag}\"]}}")
+            }
+        }
+        Some(nbt) => {
+            tracing::warn!("Invalid summon NBT '{}', using only FlintMC alias tag", nbt);
+            format!("{{Tags:[\"{tag}\"]}}")
+        }
+    }
+}
+
 pub struct MinecraftPlayer {
     bot: TestBot,
+    inventory_owner: u64,
     selected_hotbar: u8,
     inventory: std::collections::HashMap<PlayerSlot, Item>,
+    pose: Option<([f64; 3], Option<[f32; 2]>)>,
     offset: [i32; 3],
     game_mode: GameMode,
 }
 
-pub fn slot_to_minecraft_name(slot: PlayerSlot) -> &'static str {
-    match slot {
-        PlayerSlot::Hotbar1 => "container.0",
-        PlayerSlot::Hotbar2 => "container.1",
-        PlayerSlot::Hotbar3 => "container.2",
-        PlayerSlot::Hotbar4 => "container.3",
-        PlayerSlot::Hotbar5 => "container.4",
-        PlayerSlot::Hotbar6 => "container.5",
-        PlayerSlot::Hotbar7 => "container.6",
-        PlayerSlot::Hotbar8 => "container.7",
-        PlayerSlot::Hotbar9 => "container.8",
-        PlayerSlot::OffHand => "weapon.offhand",
-        PlayerSlot::Helmet => "armor.head",
-        PlayerSlot::Chestplate => "armor.chest",
-        PlayerSlot::Leggings => "armor.legs",
-        PlayerSlot::Boots => "armor.feet",
-    }
-}
-
 impl FlintPlayer for MinecraftPlayer {
+    fn restore_inventory(&mut self) {
+        let _ =
+            self.bot
+                .restore_inventory(self.inventory_owner, &self.inventory, self.selected_hotbar);
+    }
+
     fn set_slot(&mut self, slot: PlayerSlot, item: Option<&Item>) {
+        self.restore_inventory();
         let slot_name = slot_to_minecraft_name(slot);
         let cmd = if let Some(it) = item {
             self.inventory.insert(slot, it.clone());
@@ -161,7 +350,9 @@ impl FlintPlayer for MinecraftPlayer {
             format!("item replace entity flintmc_testbot {} with air", slot_name)
         };
         let _ = self.bot.send_command(&cmd);
-        std::thread::sleep(std::time::Duration::from_millis(tick::COMMAND_DELAY_MS));
+        let _ = self.bot.wait_for_inventory(&self.inventory);
+        self.bot
+            .record_inventory(self.inventory_owner, &self.inventory, self.selected_hotbar);
     }
 
     fn get_slot(&self, slot: PlayerSlot, _requested_data: Vec<String>) -> Option<Item> {
@@ -169,87 +360,69 @@ impl FlintPlayer for MinecraftPlayer {
     }
 
     fn select_hotbar(&mut self, slot: u8) {
+        self.restore_inventory();
         self.selected_hotbar = slot;
+        let _ = self.bot.select_hotbar(slot);
+        self.bot
+            .record_inventory(self.inventory_owner, &self.inventory, self.selected_hotbar);
     }
 
     fn selected_hotbar(&self) -> u8 {
         self.selected_hotbar
     }
 
-    fn use_item_on(&mut self, pos: BlockPos, face: &BlockFace) {
-        let slot = match self.selected_hotbar {
-            1 => PlayerSlot::Hotbar1,
-            2 => PlayerSlot::Hotbar2,
-            3 => PlayerSlot::Hotbar3,
-            4 => PlayerSlot::Hotbar4,
-            5 => PlayerSlot::Hotbar5,
-            6 => PlayerSlot::Hotbar6,
-            7 => PlayerSlot::Hotbar7,
-            8 => PlayerSlot::Hotbar8,
-            9 => PlayerSlot::Hotbar9,
-            _ => PlayerSlot::Hotbar1,
+    fn teleport(&mut self, pos: [f64; 3], rot: Option<[f32; 2]>) {
+        let world_pos = [
+            pos[0] + f64::from(self.offset[0]),
+            pos[1] + f64::from(self.offset[1]),
+            pos[2] + f64::from(self.offset[2]),
+        ];
+        self.pose = Some((world_pos, rot));
+        let _ = self.bot.teleport(world_pos, rot);
+    }
+
+    fn interact(&mut self) {
+        let mode_str = match self.game_mode {
+            GameMode::Survival => "survival",
+            GameMode::Creative => "creative",
+            GameMode::Adventure => "adventure",
+            GameMode::Spectator => "spectator",
         };
+        let _ = self
+            .bot
+            .send_command(&format!("gamemode {} flintmc_testbot", mode_str));
+        std::thread::sleep(std::time::Duration::from_millis(tick::COMMAND_DELAY_MS));
+        self.restore_inventory();
+        let _ = self.bot.keep_airborne();
+        if let Some((pos, rot)) = self.pose {
+            let _ = self.bot.teleport(pos, rot);
+        }
+        let _ = self.bot.interact();
 
-        if let Some(item) = self.inventory.get(&slot) {
-            let mut target_pos = pos;
-            match face {
-                BlockFace::Bottom => target_pos[1] -= 1,
-                BlockFace::Top => target_pos[1] += 1,
-                BlockFace::North => target_pos[2] -= 1,
-                BlockFace::South => target_pos[2] += 1,
-                BlockFace::West => target_pos[0] -= 1,
-                BlockFace::East => target_pos[0] += 1,
-            }
-
-            let target_world = [
-                target_pos[0] + self.offset[0],
-                target_pos[1] + self.offset[1],
-                target_pos[2] + self.offset[2],
-            ];
-
-            let _ = self.bot.ensure_near(target_world);
-
-            let mut block_id = if item.id.contains("flint_and_steel") {
-                "minecraft:fire".to_string()
-            } else if item.id.contains(":") {
-                item.id.clone()
-            } else {
-                format!("minecraft:{}", item.id)
+        if self.game_mode == GameMode::Survival || self.game_mode == GameMode::Adventure {
+            let slot = match self.selected_hotbar {
+                1 => PlayerSlot::Hotbar1,
+                2 => PlayerSlot::Hotbar2,
+                3 => PlayerSlot::Hotbar3,
+                4 => PlayerSlot::Hotbar4,
+                5 => PlayerSlot::Hotbar5,
+                6 => PlayerSlot::Hotbar6,
+                7 => PlayerSlot::Hotbar7,
+                8 => PlayerSlot::Hotbar8,
+                9 => PlayerSlot::Hotbar9,
+                _ => return,
             };
-
-            if let Ok(Some(actual_block_str)) = self.bot.get_block(target_world)
-                && actual_block_str.to_lowercase().contains("water")
-            {
-                let id_lower = block_id.to_lowercase();
-                if id_lower.contains("pane")
-                    || id_lower.contains("fence")
-                    || id_lower.contains("wall")
-                    || id_lower.contains("slab")
-                    || id_lower.contains("stair")
-                {
-                    block_id = format!("{}[waterlogged=true]", block_id);
-                }
-            }
-
-            let cmd = format!(
-                "setblock {} {} {} {}",
-                target_world[0], target_world[1], target_world[2], block_id
-            );
-            let _ = self.bot.send_command(&cmd);
-            std::thread::sleep(std::time::Duration::from_millis(tick::COMMAND_DELAY_MS));
-
-            if (self.game_mode == GameMode::Survival || self.game_mode == GameMode::Adventure)
-                && !item.id.contains("flint_and_steel")
-            {
+            if let Some(item) = self.inventory.get_mut(&slot) {
                 if item.count > 1 {
-                    let mut updated_item = item.clone();
-                    updated_item.count -= 1;
-                    self.set_slot(slot, Some(&updated_item));
+                    item.count -= 1;
                 } else {
-                    self.set_slot(slot, None);
+                    self.inventory.remove(&slot);
                 }
             }
         }
+        let _ = self.bot.wait_for_inventory(&self.inventory);
+        self.bot
+            .record_inventory(self.inventory_owner, &self.inventory, self.selected_hotbar);
     }
 
     fn set_game_mode(&mut self, mode: GameMode) {

@@ -11,8 +11,8 @@ use flint_core::format::{format_number, print_concise_summary, print_test_summar
 use flint_core::loader::TestLoader;
 use flint_core::results::AssertFailure;
 use flint_core::spatial::calculate_test_offsets_for_batch_default;
-use spatial_batch::split_tests_by_simulation_distance;
 use flint_core::test_spec::{ActionType, TestSpec};
+use spatial_batch::split_tests_by_simulation_distance;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -85,9 +85,9 @@ struct Args {
     #[arg(short = 'i', long)]
     interactive: bool,
 
-    /// Delay in milliseconds between each action (default: 100)
-    #[arg(short = 'd', long = "action-delay", default_value = "100")]
-    action_delay: u64,
+    /// Start interactive mode and immediately begin recording a test with this name
+    #[arg(long, value_name = "NAME")]
+    record: Option<String>,
 
     /// Verbose output: show all per-action details during test execution
     #[arg(short, long)]
@@ -122,15 +122,6 @@ struct Args {
     /// Coordinates are emitted in test-local space.
     #[arg(long, value_name = "PATH")]
     emit_events: Option<PathBuf>,
-
-    /// Server simulation distance in chunks. Used to split parallel batches so every
-    /// test region stays within ticking range of the bot at the layout center.
-    #[arg(long, default_value = "10")]
-    simulation_distance: u32,
-
-    /// Milliseconds to wait after teleporting so chunks load on the client (0 = no wait).
-    #[arg(long, default_value = "0")]
-    chunk_load_delay: u64,
 }
 
 fn main() -> Result<()> {
@@ -193,8 +184,10 @@ fn main() -> Result<()> {
             .context("Failed to collect test files")?
     };
 
-    // In interactive mode, we don't require tests to be found initially
-    if test_files.is_empty() && !args.interactive {
+    let interactive_mode = args.interactive || args.record.is_some();
+
+    // In interactive/recording mode, we don't require tests to be found initially
+    if test_files.is_empty() && !interactive_mode {
         let location = if !args.tags.is_empty() {
             format!("with tags: {:?}", args.tags)
         } else if let Some(ref path) = args.path {
@@ -206,7 +199,7 @@ fn main() -> Result<()> {
         std::process::exit(1);
     }
 
-    if verbose && !args.interactive {
+    if verbose && !interactive_mode {
         println!("Found {} test file(s)\n", test_files.len());
     }
 
@@ -304,9 +297,6 @@ fn main() -> Result<()> {
     // Connect to server
     let mut executor = executor::TestExecutor::new();
 
-    // Set action delay
-    executor.set_action_delay(args.action_delay);
-    executor.set_chunk_load_delay(args.chunk_load_delay);
     executor.set_verbose(args.verbose);
     executor.set_quiet(args.quiet || !matches!(args.format, OutputFormat::Pretty));
     executor.set_fail_fast(args.fail_fast);
@@ -323,16 +313,8 @@ fn main() -> Result<()> {
         executor.set_events_path(events_path);
     }
 
-    if verbose && args.action_delay != 100 {
-        println!(
-            "{} Action delay set to {} ms",
-            "→".yellow(),
-            args.action_delay
-        );
-    }
-
     // Interactive mode: enter command loop
-    if args.interactive {
+    if interactive_mode {
         println!(
             "{} Interactive mode enabled - listening for chat commands",
             "→".yellow().bold()
@@ -344,6 +326,10 @@ fn main() -> Result<()> {
         executor.connect(server)?;
         println!("{} Connected successfully\n", "✓".green());
 
+        if let Some(record_name) = args.record.as_deref() {
+            executor.start_recording(record_name, &test_loader, None)?;
+        }
+
         executor.interactive_mode(&mut test_loader)?;
         return Ok(());
     }
@@ -352,8 +338,16 @@ fn main() -> Result<()> {
         println!("{} Connecting to {}...", "→".blue(), server);
     }
     executor.connect(server)?;
+    let effective_chunk_distance = executor.bot.effective_chunk_distance()?;
+    let (view_distance, simulation_distance) = executor.bot.detected_distances();
     if verbose {
-        println!("{} Connected successfully\n", "✓".green());
+        println!(
+            "{} Connected successfully (view: {}, simulation: {}, effective: {})\n",
+            "✓".green(),
+            view_distance,
+            simulation_distance,
+            effective_chunk_distance
+        );
     }
 
     // Load all tests and run in chunks
@@ -407,15 +401,14 @@ fn main() -> Result<()> {
             }
         }
 
-        let sim_batches =
-            split_tests_by_simulation_distance(chunk_specs, args.simulation_distance);
+        let sim_batches = split_tests_by_simulation_distance(chunk_specs, effective_chunk_distance);
 
         if verbose && sim_batches.len() > 1 {
             println!(
                 "  {} Split into {} parallel batch(es) for simulation-distance={}\n",
                 "→".blue(),
                 sim_batches.len(),
-                args.simulation_distance
+                effective_chunk_distance
             );
         }
 
@@ -430,10 +423,16 @@ fn main() -> Result<()> {
                 );
             }
 
+            executor.bot.reset_to_test_origin()?;
             let offsets = calculate_test_offsets_for_batch_default(sim_batch);
+            let bot_position = executor.bot.get_position()?;
             tests_with_offsets.clear();
-            for (test_index, (test, offset)) in sim_batch.iter().cloned().zip(offsets).enumerate()
-            {
+            for (test_index, (test, offset)) in sim_batch.iter().cloned().zip(offsets).enumerate() {
+                let offset = [
+                    offset[0] + bot_position[0],
+                    offset[1],
+                    offset[2] + bot_position[2],
+                ];
                 if verbose {
                     println!(
                         "  {} Test {} (offset: [{}, {}, {}])",

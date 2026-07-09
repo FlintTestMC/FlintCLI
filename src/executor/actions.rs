@@ -1,15 +1,13 @@
 //! Test action execution - block placement, assertions, etc.
 
 use crate::executor::adapter::MinecraftWorld;
+use crate::executor::block;
 use anyhow::Result;
 use colored::Colorize;
 use flint_core::results::{ActionOutcome, AssertFailure, AssertPosition, InfoType};
 use flint_core::test_spec::AssertType;
 use flint_core::test_spec::{ActionType, Item, PlayerSlot, TimelineEntry};
 use flint_core::traits::{FlintPlayer, FlintWorld};
-
-// Constants for action timing
-pub const PLACE_EACH_DELAY_MS: u64 = 10;
 
 /// Execute a single test action
 /// Returns the outcome: Action (non-assertion), AssertPassed, or AssertFailed with details
@@ -19,11 +17,8 @@ pub fn execute_action(
     tick: u32,
     entry: &TimelineEntry,
     _value_idx: usize,
-    action_delay_ms: u64,
     verbose: bool,
 ) -> Result<ActionOutcome> {
-    let _ = world.ensure_focus();
-
     match &entry.action_type {
         ActionType::Place { pos, block } => {
             world.set_block(*pos, block);
@@ -38,7 +33,6 @@ pub fn execute_action(
                     block.to_command().dimmed()
                 );
             }
-            std::thread::sleep(std::time::Duration::from_millis(action_delay_ms));
             Ok(ActionOutcome::Action)
         }
 
@@ -56,7 +50,6 @@ pub fn execute_action(
                         placement.block.to_command().dimmed()
                     );
                 }
-                std::thread::sleep(std::time::Duration::from_millis(PLACE_EACH_DELAY_MS));
             }
             Ok(ActionOutcome::Action)
         }
@@ -99,7 +92,6 @@ pub fn execute_action(
                     block_spec.dimmed()
                 );
             }
-            std::thread::sleep(std::time::Duration::from_millis(action_delay_ms));
             Ok(ActionOutcome::Action)
         }
 
@@ -119,14 +111,32 @@ pub fn execute_action(
                     pos[2]
                 );
             }
-            std::thread::sleep(std::time::Duration::from_millis(action_delay_ms));
+            Ok(ActionOutcome::Action)
+        }
+
+        ActionType::Summon {
+            entity_alias,
+            entity_type,
+            pos,
+            nbt,
+        } => {
+            if verbose {
+                println!(
+                    "    {} Tick {}: summon {} as {} at [{}, {}, {}]",
+                    "→".blue(),
+                    tick,
+                    entity_type,
+                    entity_alias,
+                    pos[0],
+                    pos[1],
+                    pos[2]
+                );
+            }
+            world.summon_entity(entity_alias, entity_type, *pos, nbt.as_deref());
             Ok(ActionOutcome::Action)
         }
 
         ActionType::Assert { checks } => {
-            // Wait a small delay to allow block updates from the same tick to propagate to the client
-            std::thread::sleep(std::time::Duration::from_millis(50));
-
             for check in checks {
                 match check {
                     AssertType::Block(check) => {
@@ -145,23 +155,8 @@ pub fn execute_action(
                         for expected_block in &expected_blocks {
                             // Check block type
                             let matches_id = check_id(&actual.id, &expected_block.id);
-                            let mut matches_props = true;
-
-                            if matches_id {
-                                for (prop_name, expected_value) in &expected_block.properties {
-                                    if let Some(actual_value) = actual.properties.get(prop_name) {
-                                        if actual_value.to_lowercase()
-                                            != expected_value.to_lowercase()
-                                        {
-                                            matches_props = false;
-                                            break;
-                                        }
-                                    } else {
-                                        matches_props = false;
-                                        break;
-                                    }
-                                }
-                            }
+                            let matches_props =
+                                matches_id && block::properties_match(&actual, expected_block);
 
                             if matches_id && matches_props {
                                 matched_any = true;
@@ -222,6 +217,7 @@ pub fn execute_action(
                     }
                     AssertType::Inventory(check) => {
                         let actual = if let Some(p) = player {
+                            p.restore_inventory();
                             p.get_slot(check.slot, Vec::new())
                         } else {
                             None
@@ -281,22 +277,80 @@ pub fn execute_action(
                             );
                         }
                     }
+                    AssertType::Entity(check) => {
+                        let actual = world.get_entity(&check.entity_alias);
+                        if !entity_matches(
+                            &actual,
+                            check.exists,
+                            check.entity_type.as_deref(),
+                            check.pos,
+                            check.max_distance,
+                        ) {
+                            return Ok(ActionOutcome::AssertFailed(AssertFailure {
+                                tick,
+                                expected: InfoType::String(format!("{check:?}")),
+                                actual: InfoType::String(format!("{actual:?}")),
+                                position: check
+                                    .pos
+                                    .map(|pos| {
+                                        AssertPosition::from_array([
+                                            pos[0].floor() as i32,
+                                            pos[1].floor() as i32,
+                                            pos[2].floor() as i32,
+                                        ])
+                                    })
+                                    .unwrap_or_else(|| AssertPosition::from_array([0, 0, 0])),
+                                error_message: format!(
+                                    "Entity '{}' did not match expected state",
+                                    check.entity_alias
+                                ),
+                                execution_time_ms: None,
+                            }));
+                        }
+
+                        if verbose {
+                            println!(
+                                "    {} Tick {}: assert entity {} matches expected",
+                                "✓".green(),
+                                tick,
+                                check.entity_alias
+                            );
+                        }
+                    }
                 }
             }
             Ok(ActionOutcome::AssertPassed)
         }
 
-        ActionType::UseItemOn { pos, face, item } => {
+        ActionType::Tp {
+            entity_alias,
+            pos,
+            rot,
+        } => {
             if verbose {
                 println!(
-                    "    {} Tick {}: use_item_on at [{}, {}, {}] with {:?}",
+                    "    {} Tick {}: tp entity {} to [{}, {}, {}] with {:?}",
                     "→".blue(),
                     tick,
+                    entity_alias,
                     pos[0],
                     pos[1],
                     pos[2],
-                    item
+                    rot
                 );
+            }
+            if entity_alias == "player" {
+                let p = player.get_or_insert_with(|| world.create_player());
+                p.teleport(*pos, *rot);
+            } else {
+                world.teleport_entity(entity_alias, *pos, *rot);
+            }
+            Ok(ActionOutcome::Action)
+        }
+
+        ActionType::Interact { item } => {
+            if verbose {
+                println!("    {} Tick {}: interact with {:?}", "→".blue(), tick, item);
             }
             let p = player.get_or_insert_with(|| world.create_player());
             if let Some(item_id) = item {
@@ -304,8 +358,7 @@ pub fn execute_action(
                 p.set_slot(PlayerSlot::Hotbar1, Some(&it));
                 p.select_hotbar(1);
             }
-            p.use_item_on(*pos, face);
-            std::thread::sleep(std::time::Duration::from_millis(action_delay_ms));
+            p.interact();
             Ok(ActionOutcome::Action)
         }
 
@@ -317,15 +370,49 @@ pub fn execute_action(
             } else {
                 p.set_slot(*slot, None);
             }
-            std::thread::sleep(std::time::Duration::from_millis(action_delay_ms));
             Ok(ActionOutcome::Action)
         }
 
         ActionType::SelectHotbar { slot } => {
             let p = player.get_or_insert_with(|| world.create_player());
             p.select_hotbar(*slot);
-            std::thread::sleep(std::time::Duration::from_millis(action_delay_ms));
             Ok(ActionOutcome::Action)
         }
     }
+}
+
+fn entity_matches(
+    actual: &flint_core::traits::EntityState,
+    expected_exists: bool,
+    expected_type: Option<&str>,
+    expected_pos: Option<[f64; 3]>,
+    max_distance: Option<f64>,
+) -> bool {
+    if actual.exists != expected_exists {
+        return false;
+    }
+    if !expected_exists {
+        return true;
+    }
+    if let Some(expected_type) = expected_type
+        && actual.entity_type.as_deref() != Some(expected_type)
+    {
+        return false;
+    }
+    if let Some(expected_pos) = expected_pos {
+        let Some(actual_pos) = actual.pos else {
+            return false;
+        };
+        let max_distance = max_distance.unwrap_or(0.25);
+        let distance = actual_pos
+            .into_iter()
+            .zip(expected_pos)
+            .map(|(actual, expected)| (actual - expected).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        if distance > max_distance {
+            return false;
+        }
+    }
+    true
 }

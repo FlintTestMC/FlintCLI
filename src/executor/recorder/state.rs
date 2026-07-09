@@ -119,6 +119,20 @@ impl RecorderState {
         });
     }
 
+    /// Convert world position to local floating-point position for player actions.
+    #[must_use]
+    pub fn to_local_f64(&self, world_pos: [f64; 3]) -> [f64; 3] {
+        if let Some(origin) = self.origin {
+            [
+                world_pos[0] - f64::from(origin[0]),
+                world_pos[1] - f64::from(origin[1]),
+                world_pos[2] - f64::from(origin[2]),
+            ]
+        } else {
+            world_pos
+        }
+    }
+
     /// Record a block placement
     pub fn record_place(&mut self, world_pos: [i32; 3], block: &str) {
         // Set origin on first placement
@@ -176,6 +190,28 @@ impl RecorderState {
         });
     }
 
+    /// Record a player use action at an exact world position and rotation.
+    pub fn record_use(&mut self, world_pos: [f64; 3], rot: Option<[f32; 2]>, item: Option<String>) {
+        let block_pos = [
+            world_pos[0].floor() as i32,
+            world_pos[1].floor() as i32,
+            world_pos[2].floor() as i32,
+        ];
+        if self.origin.is_none() {
+            self.set_origin(block_pos);
+        }
+
+        let local_pos = self.to_local_f64(world_pos);
+        self.bounds.expand(self.to_local(block_pos));
+
+        let step = self.get_or_create_current_step();
+        step.actions.push(RecordedAction::Tp {
+            pos: local_pos,
+            rot,
+        });
+        step.actions.push(RecordedAction::Interact { item });
+    }
+
     /// Convert all Place/Remove actions in the current tick to Assertions
     pub fn convert_actions_to_asserts(&mut self) -> usize {
         let mut converted_count = 0;
@@ -204,6 +240,10 @@ impl RecorderState {
                     assert_action @ RecordedAction::Assert { .. } => {
                         new_actions.push(assert_action);
                     }
+                    player_action @ (RecordedAction::Tp { .. }
+                    | RecordedAction::Interact { .. }) => {
+                        new_actions.push(player_action);
+                    }
                 }
             }
 
@@ -231,9 +271,37 @@ impl RecorderState {
         let mut timeline_entries: Vec<TimelineEntry> = Vec::new();
 
         for step in &self.timeline {
-            // Group actions by type for this tick
             let mut placements: Vec<BlockPlacement> = Vec::new();
             let mut checks: Vec<BlockCheck> = Vec::new();
+
+            let flush_placements =
+                |timeline_entries: &mut Vec<TimelineEntry>,
+                 placements: &mut Vec<BlockPlacement>| {
+                    if !placements.is_empty() {
+                        timeline_entries.push(TimelineEntry {
+                            at: TickSpec::Single(step.tick),
+                            action_type: ActionType::PlaceEach {
+                                blocks: std::mem::take(placements),
+                            },
+                        });
+                    }
+                };
+
+            let flush_checks = |timeline_entries: &mut Vec<TimelineEntry>,
+                                checks: &mut Vec<BlockCheck>| {
+                if !checks.is_empty() {
+                    let assert_checks = std::mem::take(checks)
+                        .into_iter()
+                        .map(AssertType::Block)
+                        .collect();
+                    timeline_entries.push(TimelineEntry {
+                        at: TickSpec::Single(step.tick),
+                        action_type: ActionType::Assert {
+                            checks: assert_checks,
+                        },
+                    });
+                }
+            };
 
             for action in &step.actions {
                 match action {
@@ -255,31 +323,35 @@ impl RecorderState {
                             is: BlockSpec::Single(make_block(block)),
                         });
                     }
+                    RecordedAction::Tp { pos, rot } => {
+                        flush_placements(&mut timeline_entries, &mut placements);
+                        flush_checks(&mut timeline_entries, &mut checks);
+                        timeline_entries.push(TimelineEntry {
+                            at: TickSpec::Single(step.tick),
+                            action_type: ActionType::Tp {
+                                entity_alias: "player".to_string(),
+                                pos: *pos,
+                                rot: *rot,
+                            },
+                        });
+                    }
+                    RecordedAction::Interact { item } => {
+                        flush_placements(&mut timeline_entries, &mut placements);
+                        flush_checks(&mut timeline_entries, &mut checks);
+                        timeline_entries.push(TimelineEntry {
+                            at: TickSpec::Single(step.tick),
+                            action_type: ActionType::Interact { item: item.clone() },
+                        });
+                    }
                 }
             }
 
-            // Emit place_each if there are placements
-            if !placements.is_empty() {
-                timeline_entries.push(TimelineEntry {
-                    at: TickSpec::Single(step.tick),
-                    action_type: ActionType::PlaceEach { blocks: placements },
-                });
-            }
-
-            // Emit assert if there are checks
-            if !checks.is_empty() {
-                let assert_checks = checks.into_iter().map(AssertType::Block).collect();
-                timeline_entries.push(TimelineEntry {
-                    at: TickSpec::Single(step.tick),
-                    action_type: ActionType::Assert {
-                        checks: assert_checks,
-                    },
-                });
-            }
+            flush_placements(&mut timeline_entries, &mut placements);
+            flush_checks(&mut timeline_entries, &mut checks);
         }
 
         TestSpec {
-            flint_version: None,
+            flint_version: Some("1.0.0".to_string()),
             name: self.test_name.replace('/', "_"),
             description: Some(format!("Recorded test: {}", self.test_name)),
             tags: vec!["recorded".to_string()],

@@ -3,6 +3,16 @@
 use flint_core::test_spec::Block;
 use rustc_hash::FxHashMap;
 
+/// Check that all expected block properties match an actual Azalea block state.
+pub fn properties_match(actual: &Block, expected: &Block) -> bool {
+    expected.properties.iter().all(|(name, expected_value)| {
+        actual
+            .properties
+            .get(name)
+            .is_some_and(|actual_value| actual_value.eq_ignore_ascii_case(expected_value))
+    })
+}
+
 /// Extract block ID and properties from Azalea debug string
 /// Input: "BlockState(id: 6795, OakFence { east: false, ... })"
 /// Output: "minecraft:oak_fence[east=false,west=false]"
@@ -170,5 +180,12 @@ mod tests {
         assert!(block_matches("OakFence", "minecraft:oak_fence"));
         assert!(block_matches("minecraft:oak_fence", "oak_fence"));
         assert!(!block_matches("SpruceFence", "oak_fence"));
+    }
+
+    #[test]
+    fn properties_match_requires_exact_property_names() {
+        let actual = make_block("minecraft:oak_slab[type=bottom,waterlogged=false]");
+        let expected = make_block("minecraft:oak_slab[type=bottom,waterlogged=false]");
+        assert!(properties_match(&actual, &expected));
     }
 }
