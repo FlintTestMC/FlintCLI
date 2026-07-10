@@ -6,7 +6,7 @@ use anyhow::Result;
 use colored::Colorize;
 use flint_core::results::{ActionOutcome, AssertFailure, AssertPosition, InfoType};
 use flint_core::test_spec::AssertType;
-use flint_core::test_spec::{ActionType, EntityNbt, Item, PlayerSlot, TimelineEntry};
+use flint_core::test_spec::{ActionType, Item, PlayerSlot, TimelineEntry};
 use flint_core::traits::{FlintPlayer, FlintWorld};
 
 /// Execute a single test action
@@ -286,16 +286,7 @@ pub fn execute_action(
                             .map(|nbt| nbt.requested_paths())
                             .unwrap_or_default();
                         let actual = world.get_entity(&check.entity_alias, &requested_nbt);
-                        if !entity_matches(
-                            &actual,
-                            check.exists,
-                            check.entity_type.as_deref(),
-                            check.pos,
-                            check.max_distance,
-                            check.rot,
-                            check.max_rotation_delta,
-                            check.nbt.as_ref(),
-                        ) {
+                        if !flint_core::runner::entity_matches(&actual, check) {
                             return Ok(ActionOutcome::AssertFailed(AssertFailure {
                                 tick,
                                 expected: InfoType::String(format!("{check:?}")),
@@ -389,71 +380,4 @@ pub fn execute_action(
             Ok(ActionOutcome::Action)
         }
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn entity_matches(
-    actual: &flint_core::traits::EntityState,
-    expected_exists: bool,
-    expected_type: Option<&str>,
-    expected_pos: Option<[f64; 3]>,
-    max_distance: Option<f64>,
-    expected_rot: Option<[f32; 2]>,
-    max_rotation_delta: Option<f32>,
-    expected_nbt: Option<&EntityNbt>,
-) -> bool {
-    if actual.exists != expected_exists {
-        return false;
-    }
-    if !expected_exists {
-        return true;
-    }
-    if let Some(expected_type) = expected_type
-        && actual.entity_type.as_deref() != Some(expected_type)
-    {
-        return false;
-    }
-    if let Some(expected_pos) = expected_pos {
-        let Some(actual_pos) = actual.pos else {
-            return false;
-        };
-        let max_distance = max_distance.unwrap_or(0.25);
-        let distance = actual_pos
-            .into_iter()
-            .zip(expected_pos)
-            .map(|(actual, expected)| (actual - expected).powi(2))
-            .sum::<f64>()
-            .sqrt();
-        if distance > max_distance {
-            return false;
-        }
-    }
-    if let Some(expected_rot) = expected_rot {
-        let Some(actual_rot) = actual.rot else {
-            return false;
-        };
-        let max_delta = max_rotation_delta.unwrap_or(0.5);
-        if actual_rot
-            .into_iter()
-            .zip(expected_rot)
-            .any(|(actual, expected)| (actual - expected).abs() > max_delta)
-        {
-            return false;
-        }
-    }
-    if let Some(expected_nbt) = expected_nbt {
-        for (key, expected) in expected_nbt.expected_values() {
-            let Some(actual) = actual.nbt.get(&key) else {
-                return false;
-            };
-            if normalize_entity_nbt_value(actual) != normalize_entity_nbt_value(&expected) {
-                return false;
-            }
-        }
-    }
-    true
-}
-
-fn normalize_entity_nbt_value(value: &str) -> String {
-    value.trim().trim_matches('"').to_string()
 }

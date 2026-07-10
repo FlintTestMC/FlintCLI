@@ -395,7 +395,7 @@ Assertions can also check summoned entities by alias:
       "entity_alias": "falling",
       "is": "minecraft:falling_block",
       "pos": [1.5, 64, 1.5],
-      "max_distance": 0.5
+      "position_tolerance": 0.5
     }
   ]
 }
