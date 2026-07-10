@@ -3,7 +3,7 @@ use crate::executor::block;
 use crate::executor::tick;
 use anyhow::Result;
 use flint_core::BlockPos;
-use flint_core::test_spec::{Block, GameMode, Item, PlayerSlot};
+use flint_core::test_spec::{Block, EntityNbt, GameMode, Item, PlayerSlot};
 use flint_core::traits::{EntityState, FlintAdapter, FlintPlayer, FlintWorld, ServerInfo};
 use std::collections::HashMap;
 
@@ -149,7 +149,13 @@ impl FlintWorld for MinecraftWorld {
         }
     }
 
-    fn summon_entity(&mut self, alias: &str, entity_type: &str, pos: [f64; 3], nbt: Option<&str>) {
+    fn summon_entity(
+        &mut self,
+        alias: &str,
+        entity_type: &str,
+        pos: [f64; 3],
+        nbt: Option<&EntityNbt>,
+    ) {
         let Some(tag) = Self::entity_tag(alias) else {
             tracing::error!("Invalid entity alias for summon: {}", alias);
             return;
@@ -167,7 +173,7 @@ impl FlintWorld for MinecraftWorld {
             pos[2] + f64::from(self.offset[2]),
         ];
         let _ = self.bot.send_command(&format!("kill @e[tag={}]", tag));
-        let nbt = summon_nbt_with_tag(nbt, &tag);
+        let nbt = summon_nbt_with_tag(nbt.map(EntityNbt::to_snbt).as_deref(), &tag);
         let cmd = format!(
             "summon {} {} {} {} {}",
             entity_type, world_pos[0], world_pos[1], world_pos[2], nbt
@@ -211,7 +217,7 @@ impl FlintWorld for MinecraftWorld {
         }
     }
 
-    fn get_entity(&self, alias: &str) -> EntityState {
+    fn get_entity(&self, alias: &str, requested_nbt: &[String]) -> EntityState {
         let Some(entity) = self.entities.get(alias) else {
             return EntityState::default();
         };
@@ -221,6 +227,8 @@ impl FlintWorld for MinecraftWorld {
                 exists: false,
                 entity_type: Some(entity.entity_type.clone()),
                 pos: None,
+                rot: None,
+                nbt: HashMap::new(),
             };
         };
         let pos = values.get(..3).map(|pos| {
@@ -230,10 +238,21 @@ impl FlintWorld for MinecraftWorld {
                 pos[2] - f64::from(self.offset[2]),
             ]
         });
+        let rot = query_entity_numbers(&self.bot, &selector, "Rotation")
+            .ok()
+            .and_then(|rot| rot.get(..2).map(|rot| [rot[0] as f32, rot[1] as f32]));
+        let mut nbt = HashMap::new();
+        for path in requested_nbt {
+            if let Ok(value) = query_entity_data(&self.bot, &selector, path) {
+                nbt.insert(path.clone(), value);
+            }
+        }
         EntityState {
             exists: true,
             entity_type: Some(entity.entity_type.clone()),
             pos,
+            rot,
+            nbt,
         }
     }
 
@@ -251,6 +270,23 @@ impl FlintWorld for MinecraftWorld {
 }
 
 fn query_entity_numbers(bot: &TestBot, selector: &str, path: &str) -> Result<Vec<f64>> {
+    let message = query_entity_data_message(bot, selector, path)?;
+    let values = parse_numbers_after_colon(&message);
+    if values.is_empty() {
+        anyhow::bail!("entity query returned no numbers: {message}");
+    }
+    Ok(values)
+}
+
+fn query_entity_data(bot: &TestBot, selector: &str, path: &str) -> Result<String> {
+    let message = query_entity_data_message(bot, selector, path)?;
+    Ok(message
+        .split_once(':')
+        .map(|(_, value)| value.trim().to_string())
+        .unwrap_or_else(|| message.trim().to_string()))
+}
+
+fn query_entity_data_message(bot: &TestBot, selector: &str, path: &str) -> Result<String> {
     while bot
         .recv_chat_timeout(std::time::Duration::from_millis(
             tick::CHAT_DRAIN_TIMEOUT_MS,
@@ -270,10 +306,7 @@ fn query_entity_numbers(bot: &TestBot, selector: &str, path: &str) -> Result<Vec
                 anyhow::bail!("entity query failed: {message}");
             }
             if message.contains(path) || message.contains("entity data") {
-                let values = parse_numbers_after_colon(&message);
-                if !values.is_empty() {
-                    return Ok(values);
-                }
+                return Ok(message);
             }
         }
     }
@@ -330,10 +363,8 @@ pub struct MinecraftPlayer {
 }
 
 impl FlintPlayer for MinecraftPlayer {
-    fn restore_inventory(&mut self) {
-        let _ =
-            self.bot
-                .restore_inventory(self.inventory_owner, &self.inventory, self.selected_hotbar);
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 
     fn set_slot(&mut self, slot: PlayerSlot, item: Option<&Item>) {
@@ -436,5 +467,13 @@ impl FlintPlayer for MinecraftPlayer {
         let cmd = format!("gamemode {} flintmc_testbot", mode_str);
         let _ = self.bot.send_command(&cmd);
         std::thread::sleep(std::time::Duration::from_millis(tick::COMMAND_DELAY_MS));
+    }
+}
+
+impl MinecraftPlayer {
+    pub(crate) fn restore_inventory(&mut self) {
+        let _ =
+            self.bot
+                .restore_inventory(self.inventory_owner, &self.inventory, self.selected_hotbar);
     }
 }
