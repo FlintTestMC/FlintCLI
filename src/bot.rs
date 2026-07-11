@@ -14,6 +14,9 @@ const INIT_WAIT_DELAY_MS: u64 = 100;
 const GAME_STATE_WAIT_ATTEMPTS: u32 = 100;
 const STATE_SYNC_TIMEOUT_MS: u64 = 2_000;
 const STATE_SYNC_POLL_MS: u64 = 5;
+// Must be configured during Event::Init, before Azalea allocates PartialWorld.
+// Vanilla servers support at most 32 chunks and may clamp this request lower.
+const CLIENT_VIEW_DISTANCE: u8 = 32;
 
 type ChatReceiver = std::sync::mpsc::Receiver<(Option<String>, String)>;
 
@@ -133,6 +136,10 @@ impl TestBot {
                 async fn handler(bot: Client, event: Event, state: State) -> Result<()> {
                     match event {
                         Event::Init => {
+                            bot.set_client_information(azalea::ClientInformation {
+                                view_distance: CLIENT_VIEW_DISTANCE,
+                                ..Default::default()
+                            })?;
                             *state.client_handle.write() = Some(bot.clone());
                             tracing::info!("Bot initialized");
                         }
