@@ -4,7 +4,9 @@ use crate::executor::adapter::{MinecraftPlayer, MinecraftWorld};
 use crate::executor::block;
 use anyhow::Result;
 use colored::Colorize;
-use flint_core::results::{ActionOutcome, AssertFailure, AssertPosition, InfoType};
+use flint_core::results::{
+    ActionOutcome, AssertEntityFail, AssertFailure, AssertPosition, InfoType,
+};
 use flint_core::test_spec::AssertType;
 use flint_core::test_spec::{ActionType, Item, PlayerSlot, TimelineEntry};
 use flint_core::traits::{FlintPlayer, FlintWorld};
@@ -287,26 +289,9 @@ pub fn execute_action(
                             .unwrap_or_default();
                         let actual = world.get_entity(&check.entity_alias, &requested_nbt);
                         if !flint_core::runner::entity_matches(&actual, check) {
-                            return Ok(ActionOutcome::AssertFailed(AssertFailure {
-                                tick,
-                                expected: InfoType::String(format!("{check:?}")),
-                                actual: InfoType::String(format!("{actual:?}")),
-                                position: check
-                                    .pos
-                                    .map(|pos| {
-                                        AssertPosition::from_array([
-                                            pos[0].floor() as i32,
-                                            pos[1].floor() as i32,
-                                            pos[2].floor() as i32,
-                                        ])
-                                    })
-                                    .unwrap_or_else(|| AssertPosition::from_array([0, 0, 0])),
-                                error_message: format!(
-                                    "Entity '{}' did not match expected state",
-                                    check.entity_alias
-                                ),
-                                execution_time_ms: None,
-                            }));
+                            return Ok(ActionOutcome::AssertFailed(
+                                AssertEntityFail::new(tick, check, &actual).into(),
+                            ));
                         }
 
                         if verbose {
@@ -353,7 +338,9 @@ pub fn execute_action(
             if verbose {
                 println!("    {} Tick {}: interact with {:?}", "→".blue(), tick, item);
             }
-            let p = player.get_or_insert_with(|| world.create_player());
+            let p = player
+                .as_mut()
+                .expect("interact requires an existing player");
             if let Some(item_id) = item {
                 let it = Item::new(item_id);
                 p.set_slot(PlayerSlot::Hotbar1, Some(&it));
