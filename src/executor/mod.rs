@@ -18,11 +18,8 @@ use flint_core::test_spec::{ActionType, AssertType, TestSpec, TimelineEntry};
 use flint_core::timeline::TimelineAggregate;
 use flint_core::traits::{FlintPlayer, FlintWorld};
 use std::io::Write;
-pub use tick::{COMMAND_DELAY_MS, MIN_RETRY_DELAY_MS};
 
 // Timing constants
-const CLEANUP_DELAY_MS: u64 = 200;
-const TEST_RESULT_DELAY_MS: u64 = 50;
 const DEFAULT_TESTS_DIR: &str = "FlintBenchmark/tests";
 
 // Progress bar constants
@@ -130,9 +127,8 @@ impl TestExecutor {
             let cz1 = max[2].div_euclid(16);
             let verb = if add { "add" } else { "remove" };
             let cmd = format!("forceload {verb} {cx0} {cz0} {cx1} {cz1}");
-            self.bot.send_command(&cmd)?;
+            self.bot.send_command_synced(&cmd)?;
         }
-        std::thread::sleep(std::time::Duration::from_millis(COMMAND_DELAY_MS));
         Ok(())
     }
 
@@ -143,12 +139,10 @@ impl TestExecutor {
 
         // Send help message to chat (without ! to avoid self-triggering)
         self.bot
-            .send_command("say FlintMC Interactive Mode active")?;
-        std::thread::sleep(std::time::Duration::from_millis(COMMAND_DELAY_MS));
-        self.bot.send_command(
+            .send_command_synced("say FlintMC Interactive Mode active")?;
+        self.bot.send_command_synced(
             "say Type: help, search, run, run-all, run-tags, list, reload, stop (prefix with !)",
         )?;
-        std::thread::sleep(std::time::Duration::from_millis(COMMAND_DELAY_MS));
 
         // Drain any messages
         tick::drain_chat_messages(&mut self.bot);
@@ -399,6 +393,25 @@ impl TestExecutor {
         // Build global merged timeline using flint-core
         let aggregate = TimelineAggregate::from_tests(tests_with_offsets);
 
+        // The stable focus point is the center of the complete parallel layout. Parking
+        // here keeps every test as close as possible to the client's loaded chunks.
+        let (layout_min, layout_max) = tests_with_offsets.iter().fold(
+            ([i32::MAX; 3], [i32::MIN; 3]),
+            |(mut min, mut max), (test, offset)| {
+                let region = test.cleanup_region();
+                for axis in 0..3 {
+                    min[axis] = min[axis].min(region[0][axis] + offset[axis]);
+                    max[axis] = max[axis].max(region[1][axis] + offset[axis]);
+                }
+                (min, max)
+            },
+        );
+        let layout_center = [
+            f64::from((layout_min[0] + layout_max[0]).div_euclid(2)) + 0.5,
+            64.0,
+            f64::from((layout_min[2] + layout_max[2]).div_euclid(2)) + 0.5,
+        ];
+
         if verbose {
             println!("  Global timeline: {} ticks", aggregate.max_tick);
             println!(
@@ -432,15 +445,13 @@ impl TestExecutor {
                 "fill {} {} {} {} {} {} air",
                 world_min[0], world_min[1], world_min[2], world_max[0], world_max[1], world_max[2]
             );
-            self.bot.send_command(&cmd)?;
+            self.bot.send_command_synced(&cmd)?;
         }
-        std::thread::sleep(std::time::Duration::from_millis(CLEANUP_DELAY_MS));
 
         self.forceload_regions(tests_with_offsets, true)?;
 
         // Freeze time globally
-        self.bot.send_command("tick freeze")?;
-        std::thread::sleep(std::time::Duration::from_millis(COMMAND_DELAY_MS));
+        self.bot.send_command_synced("tick freeze")?;
 
         // Break after setup if requested
         let mut stepping_mode = false;
@@ -634,9 +645,10 @@ impl TestExecutor {
                         world_max[1],
                         world_max[2]
                     );
-                    self.bot.send_command(&cmd)?;
+                    self.bot.send_command_synced(&cmd)?;
                     tests_cleaned[test_idx] = true;
-                    std::thread::sleep(std::time::Duration::from_millis(COMMAND_DELAY_MS));
+                    players[test_idx] = None;
+                    self.bot.park_at(layout_center)?;
                 }
             }
 
@@ -654,7 +666,6 @@ impl TestExecutor {
             // Advance to next tick.
             if let Some((scan_min, scan_max)) = scan_bounds {
                 tick::step_tick(&mut self.bot, verbose)?;
-                std::thread::sleep(std::time::Duration::from_millis(CLEANUP_DELAY_MS));
                 let world_blocks = self.scan_region(scan_min, scan_max)?;
                 if let Some(events) = self.events.as_mut() {
                     events.emit_tick(current_tick, world_blocks)?;
@@ -663,7 +674,6 @@ impl TestExecutor {
             } else if current_tick < aggregate.max_tick {
                 if stepping_mode {
                     tick::step_tick(&mut self.bot, verbose)?;
-                    std::thread::sleep(std::time::Duration::from_millis(CLEANUP_DELAY_MS));
                     current_tick += 1;
                 } else {
                     let next_event_tick = aggregate
@@ -676,16 +686,13 @@ impl TestExecutor {
                         aggregate.max_tick - current_tick
                     };
 
-                    let sprint_time_ms = if ticks_to_sprint == 1 {
+                    if ticks_to_sprint == 1 {
                         tick::step_tick(&mut self.bot, verbose)?
                     } else if ticks_to_sprint > 1 {
                         tick::sprint_ticks(&mut self.bot, ticks_to_sprint, verbose)?
                     } else {
                         0
                     };
-
-                    let retry_delay = sprint_time_ms.max(MIN_RETRY_DELAY_MS);
-                    std::thread::sleep(std::time::Duration::from_millis(retry_delay));
 
                     current_tick += ticks_to_sprint;
                 }
@@ -743,9 +750,10 @@ impl TestExecutor {
                     world_max[1],
                     world_max[2]
                 );
-                self.bot.send_command(&cmd)?;
+                self.bot.send_command_synced(&cmd)?;
                 tests_cleaned[test_idx] = true;
-                std::thread::sleep(std::time::Duration::from_millis(COMMAND_DELAY_MS));
+                players[test_idx] = None;
+                self.bot.park_at(layout_center)?;
             }
         }
 
@@ -795,18 +803,14 @@ impl TestExecutor {
             results.len(),
             total_failed
         );
-        self.bot.send_command(&format!("say {}", summary))?;
-        std::thread::sleep(std::time::Duration::from_millis(COMMAND_DELAY_MS));
+        self.bot.send_command_synced(&format!("say {}", summary))?;
 
         // Send individual test results to chat
         for result in &results {
             let status = if result.success { "PASS" } else { "FAIL" };
             let msg = format!("say [{}] {}", status, result.test_name);
-            self.bot.send_command(&msg)?;
-            std::thread::sleep(std::time::Duration::from_millis(TEST_RESULT_DELAY_MS));
+            self.bot.send_command_synced(&msg)?;
         }
-
-        std::thread::sleep(std::time::Duration::from_millis(CLEANUP_DELAY_MS));
 
         // Collect failure details
         let failures: Vec<(String, AssertFailure)> = tests_with_offsets
@@ -818,6 +822,10 @@ impl TestExecutor {
                     .map(|detail| (test.name.clone(), detail))
             })
             .collect();
+
+        // A virtual player may have left the shared bot inside a test region. Park the
+        // physical bot at the layout center after every run, including playerless runs.
+        self.bot.park_at(layout_center)?;
 
         Ok(TestRunOutput { results, failures })
     }

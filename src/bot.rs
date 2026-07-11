@@ -1,6 +1,8 @@
 use anyhow::Result;
+use azalea::app::{App, Plugin};
+use azalea::ecs::schedule::IntoScheduleConfigs;
 use azalea::prelude::*;
-use flint_core::test_spec::{Item, PlayerSlot};
+use flint_core::test_spec::{GameMode, Item, PlayerSlot};
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -10,17 +12,30 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 const INIT_WAIT_ATTEMPTS: u32 = 50;
 const INIT_WAIT_DELAY_MS: u64 = 100;
 const GAME_STATE_WAIT_ATTEMPTS: u32 = 100;
-const WORLD_SYNC_DELAY_MS: u64 = 500;
 const STATE_SYNC_TIMEOUT_MS: u64 = 2_000;
 const STATE_SYNC_POLL_MS: u64 = 5;
 
 type ChatReceiver = std::sync::mpsc::Receiver<(Option<String>, String)>;
 
+struct DisableBotPhysicsPlugin;
+
+impl Plugin for DisableBotPhysicsPlugin {
+    fn build(&self, app: &mut App) {
+        app.configure_sets(
+            azalea::core::tick::GameTick,
+            azalea::physics::PhysicsSystems.run_if(|| false),
+        );
+    }
+}
+
 #[derive(Clone, Default)]
-struct ActiveInventory {
+struct ActivePlayer {
     owner: Option<u64>,
     slots: HashMap<PlayerSlot, Item>,
     selected_hotbar: Option<u8>,
+    position: Option<[f64; 3]>,
+    rotation: Option<[f32; 2]>,
+    game_mode: Option<GameMode>,
 }
 
 #[derive(Clone, Component)]
@@ -28,6 +43,7 @@ struct State {
     client_handle: Arc<RwLock<Option<Client>>>,
     in_game: Arc<AtomicBool>,
     chat_tx: Option<std::sync::mpsc::Sender<(Option<String>, String)>>,
+    world_ready_tx: Option<std::sync::mpsc::SyncSender<()>>,
     view_distance: Arc<AtomicU32>,
     simulation_distance: Arc<AtomicU32>,
 }
@@ -38,6 +54,7 @@ impl Default for State {
             client_handle: Arc::new(RwLock::new(None)),
             in_game: Arc::new(AtomicBool::new(false)),
             chat_tx: None,
+            world_ready_tx: None,
             view_distance: Arc::new(AtomicU32::new(0)),
             simulation_distance: Arc::new(AtomicU32::new(0)),
         }
@@ -50,7 +67,8 @@ pub struct TestBot {
     in_game: Option<Arc<AtomicBool>>,
     chat_rx: Option<Arc<parking_lot::Mutex<ChatReceiver>>>,
     next_inventory_owner: Arc<AtomicU64>,
-    active_inventory: Arc<parking_lot::Mutex<ActiveInventory>>,
+    next_command_ack: Arc<AtomicU64>,
+    active_player: Arc<parking_lot::Mutex<ActivePlayer>>,
     view_distance: Arc<AtomicU32>,
     simulation_distance: Arc<AtomicU32>,
 }
@@ -62,7 +80,8 @@ impl Default for TestBot {
             in_game: None,
             chat_rx: None,
             next_inventory_owner: Arc::new(AtomicU64::new(1)),
-            active_inventory: Arc::new(parking_lot::Mutex::new(ActiveInventory::default())),
+            next_command_ack: Arc::new(AtomicU64::new(1)),
+            active_player: Arc::new(parking_lot::Mutex::new(ActivePlayer::default())),
             view_distance: Arc::new(AtomicU32::new(0)),
             simulation_distance: Arc::new(AtomicU32::new(0)),
         }
@@ -89,9 +108,11 @@ impl TestBot {
 
         // Create chat channel
         let (chat_tx, chat_rx) = std::sync::mpsc::channel();
+        let (world_ready_tx, world_ready_rx) = std::sync::mpsc::sync_channel(1);
 
         let state = State {
             chat_tx: Some(chat_tx),
+            world_ready_tx: Some(world_ready_tx),
             ..Default::default()
         };
         let client_handle = state.client_handle.clone();
@@ -119,6 +140,12 @@ impl TestBot {
                             // Login event means we're fully in the game state
                             state.in_game.store(true, Ordering::SeqCst);
                             tracing::info!("Bot in game state");
+                        }
+                        Event::Spawn => {
+                            if let Some(tx) = &state.world_ready_tx {
+                                let _ = tx.try_send(());
+                            }
+                            tracing::info!("Bot world spawned");
                         }
                         Event::Chat(m) => {
                             // Extract the message content
@@ -176,6 +203,7 @@ impl TestBot {
                 }
 
                 let result = ClientBuilder::new()
+                    .add_plugins(DisableBotPhysicsPlugin)
                     .set_handler(handler)
                     .set_state(state)
                     .start(account, server_owned.as_str())
@@ -219,8 +247,9 @@ impl TestBot {
         self.simulation_distance = simulation_distance;
         tracing::info!("Connected successfully and in game state");
 
-        // Give a small amount of extra time for world data to sync
-        std::thread::sleep(std::time::Duration::from_millis(WORLD_SYNC_DELAY_MS));
+        world_ready_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .map_err(|_| anyhow::anyhow!("Bot world did not spawn within timeout"))?;
         self.reset_to_test_origin()?;
 
         Ok(())
@@ -236,7 +265,7 @@ impl TestBot {
         };
         let mut updates = client.get_update_broadcaster();
         self.send_command("execute in minecraft:overworld run setblock 0 63 0 minecraft:bedrock")?;
-        self.send_command("execute in minecraft:overworld run tp flintmc_testbot 0 64 0 0 0")?;
+        self.send_command("execute in minecraft:overworld run tp flintmc_testbot 0.5 64 0.5 0 0")?;
         self.keep_airborne()?;
         self.wait_until("Overworld test origin", || {
             let in_overworld = client
@@ -256,18 +285,39 @@ impl TestBot {
         })?;
         let _ = updates.blocking_recv();
         let _ = updates.blocking_recv();
+        *self.active_player.lock() = ActivePlayer::default();
+        Ok(())
+    }
+
+    /// Park the physical bot at the shared focus point and discard any active virtual
+    /// player ownership. The next player action will restore that player's full state.
+    pub fn park_at(&self, position: [f64; 3]) -> Result<()> {
+        self.keep_airborne()?;
+        self.teleport(position, Some([0.0, 0.0]))?;
+        *self.active_player.lock() = ActivePlayer::default();
         Ok(())
     }
 
     pub fn keep_airborne(&self) -> Result<()> {
-        let client_guard = self.get_client()?;
-        let client = client_guard
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Bot not initialized"))?;
+        let client = {
+            let client_guard = self.get_client()?;
+            client_guard
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Bot not initialized"))?
+                .clone()
+        };
         client.query_self::<&mut azalea::entity::PlayerAbilities, _>(|mut abilities| {
             abilities.can_fly = true;
             abilities.flying = true;
         })?;
+        client.write_packet(
+            azalea::protocol::packets::game::s_player_abilities::ServerboundPlayerAbilities {
+                is_flying: true,
+            },
+        );
+        // The acknowledgement packet is sent after the abilities packet on the same
+        // connection, so receiving it proves the server has processed flying=true.
+        self.send_command_synced("execute if entity flintmc_testbot run return 1")?;
         Ok(())
     }
 
@@ -317,6 +367,36 @@ impl TestBot {
         tracing::debug!("Sending command: {}", command_with_slash);
         client.chat(&command_with_slash);
         Ok(())
+    }
+
+    /// Send a command and wait until the server has processed it. Commands from one
+    /// connection are ordered, so receiving the marker also acknowledges every command
+    /// sent before it without relying on an arbitrary delay.
+    pub fn send_command_synced(&self, command: &str) -> Result<()> {
+        self.send_command(command)?;
+        let id = self.next_command_ack.fetch_add(1, Ordering::Relaxed);
+        let marker = format!("__flintmc_ack_{id}__");
+        self.send_command(&format!(
+            "tellraw flintmc_testbot {{\"text\":\"{marker}\"}}"
+        ))?;
+
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_millis(STATE_SYNC_TIMEOUT_MS);
+        while std::time::Instant::now() < deadline {
+            if self
+                .recv_chat_timeout(std::time::Duration::from_millis(STATE_SYNC_POLL_MS))
+                .is_some_and(|(_, message)| message.contains(&marker))
+            {
+                return Ok(());
+            }
+        }
+        anyhow::bail!("timed out waiting for command acknowledgement: {command}")
+    }
+
+    /// Fence server world changes against Azalea's packet processing. The marker is
+    /// emitted after earlier commands/ticks and received after preceding world packets.
+    pub fn sync_client_world(&self) -> Result<()> {
+        self.send_command_synced("execute if entity flintmc_testbot run return 1")
     }
 
     pub fn teleport(&self, pos: [f64; 3], rot: Option<[f32; 2]>) -> Result<()> {
@@ -428,16 +508,22 @@ impl TestBot {
         self.next_inventory_owner.fetch_add(1, Ordering::Relaxed)
     }
 
-    pub fn restore_inventory(
+    pub fn restore_player(
         &self,
         owner: u64,
         slots: &HashMap<PlayerSlot, Item>,
         selected_hotbar: u8,
+        position: Option<[f64; 3]>,
+        rotation: Option<[f32; 2]>,
+        game_mode: GameMode,
     ) -> Result<()> {
-        let mut active = self.active_inventory.lock();
+        let mut active = self.active_player.lock();
         if active.owner == Some(owner)
             && active.slots == *slots
             && active.selected_hotbar == Some(selected_hotbar)
+            && active.position == position
+            && active.rotation == rotation
+            && active.game_mode == Some(game_mode)
         {
             return Ok(());
         }
@@ -461,23 +547,55 @@ impl TestBot {
         if active.selected_hotbar != Some(selected_hotbar) {
             self.select_hotbar(selected_hotbar)?;
         }
+        if active.game_mode != Some(game_mode) {
+            let mode = match game_mode {
+                GameMode::Survival => "survival",
+                GameMode::Creative => "creative",
+                GameMode::Adventure => "adventure",
+                GameMode::Spectator => "spectator",
+            };
+            self.send_command_synced(&format!("gamemode {mode} flintmc_testbot"))?;
+        }
+        self.keep_airborne()?;
+        match position {
+            Some(pos)
+                if active.position != position
+                    || active.rotation != rotation
+                    || active.owner != Some(owner) =>
+            {
+                self.teleport(pos, rotation)?;
+            }
+            None if active.position.is_some() || active.owner != Some(owner) => {
+                self.teleport([0.5, 64.0, 0.5], Some([0.0, 0.0]))?;
+            }
+            _ => {}
+        }
         self.wait_for_inventory(slots)?;
         active.owner = Some(owner);
         active.slots = slots.clone();
         active.selected_hotbar = Some(selected_hotbar);
+        active.position = position;
+        active.rotation = rotation;
+        active.game_mode = Some(game_mode);
         Ok(())
     }
 
-    pub fn record_inventory(
+    pub fn record_player(
         &self,
         owner: u64,
         slots: &HashMap<PlayerSlot, Item>,
         selected_hotbar: u8,
+        position: Option<[f64; 3]>,
+        rotation: Option<[f32; 2]>,
+        game_mode: GameMode,
     ) {
-        let mut active = self.active_inventory.lock();
+        let mut active = self.active_player.lock();
         active.owner = Some(owner);
         active.slots = slots.clone();
         active.selected_hotbar = Some(selected_hotbar);
+        active.position = position;
+        active.rotation = rotation;
+        active.game_mode = Some(game_mode);
     }
 
     pub fn wait_for_inventory(&self, slots: &HashMap<PlayerSlot, Item>) -> Result<()> {

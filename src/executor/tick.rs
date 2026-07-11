@@ -7,10 +7,8 @@ use colored::Colorize;
 // Constants for tick timing
 pub const CHAT_DRAIN_TIMEOUT_MS: u64 = 10;
 pub const CHAT_POLL_TIMEOUT_MS: u64 = 100;
-pub const COMMAND_DELAY_MS: u64 = 100;
 pub const GAMETIME_QUERY_TIMEOUT_SECS: u64 = 5;
 pub const TICK_STEP_TIMEOUT_SECS: u64 = 5;
-pub const TICK_STEP_POLL_MS: u64 = 50;
 pub const SPRINT_TIMEOUT_SECS: u64 = 30;
 pub const MIN_RETRY_DELAY_MS: u64 = 200;
 
@@ -122,17 +120,20 @@ pub fn step_tick(bot: &mut TestBot, verbose: bool) -> Result<u64> {
     let before = query_gametime(bot)?;
 
     let start = std::time::Instant::now();
-    bot.send_command("tick step")?;
+    // First acknowledge that the server processed the command, then verify the
+    // scheduled tick itself completed by observing game time advance.
+    bot.send_command_synced("tick step")?;
 
-    // Wait for the tick to actually complete by polling gametime
+    // Each game-time query blocks until its server response arrives, so no polling
+    // delay is needed between verification attempts.
     let timeout = std::time::Duration::from_secs(TICK_STEP_TIMEOUT_SECS);
     let poll_start = std::time::Instant::now();
 
     loop {
-        std::thread::sleep(std::time::Duration::from_millis(TICK_STEP_POLL_MS));
         let after = query_gametime(bot)?;
 
         if after > before {
+            bot.sync_client_world()?;
             let elapsed = start.elapsed().as_millis() as u64;
             if verbose {
                 println!(
@@ -177,6 +178,7 @@ pub fn sprint_ticks(bot: &mut TestBot, ticks: u32, verbose: bool) -> Result<u64>
         {
             // Look for "Sprint completed" message
             if message.contains("Sprint completed") {
+                bot.sync_client_world()?;
                 // Try to extract ms per tick
                 // Format: "... or X ms per tick"
                 if let Some(ms_part) = message.split("or ").nth(1)

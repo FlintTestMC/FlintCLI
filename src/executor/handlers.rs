@@ -5,9 +5,7 @@ use flint_core::loader::TestLoader;
 use flint_core::spatial::pair_tests_with_offsets;
 use flint_core::test_spec::TestSpec;
 
-use super::{
-    COMMAND_DELAY_MS, DEFAULT_TESTS_DIR, TEST_RESULT_DELAY_MS, TestExecutor, block, recorder, tick,
-};
+use super::{DEFAULT_TESTS_DIR, TestExecutor, block, recorder, tick};
 
 /// Parse command parts from a chat message
 /// Returns (command, args) if a valid command was found
@@ -76,8 +74,7 @@ impl TestExecutor {
                     format!(" [{}]", test.tags.join(", "))
                 };
                 self.bot
-                    .send_command(&format!("say - {}{}", test.name, tags))?;
-                std::thread::sleep(std::time::Duration::from_millis(TEST_RESULT_DELAY_MS));
+                    .send_command_synced(&format!("say - {}{}", test.name, tags))?;
             }
         }
         Ok(())
@@ -100,9 +97,8 @@ impl TestExecutor {
                     format!(" [{}]", test.tags.join(", "))
                 };
                 self.bot
-                    .send_command(&format!("say - {}{}", test.name, tags))?;
+                    .send_command_synced(&format!("say - {}{}", test.name, tags))?;
                 found += 1;
-                std::thread::sleep(std::time::Duration::from_millis(TEST_RESULT_DELAY_MS));
             }
         }
         if found == 0 {
@@ -277,8 +273,7 @@ impl TestExecutor {
         self.recorder = Some(recorder_state);
 
         // Freeze time for controlled recording
-        self.bot.send_command("tick freeze")?;
-        std::thread::sleep(std::time::Duration::from_millis(COMMAND_DELAY_MS));
+        self.bot.send_command_synced("tick freeze")?;
 
         self.bot
             .send_command(&format!("say Recording started: {}", test_name))?;

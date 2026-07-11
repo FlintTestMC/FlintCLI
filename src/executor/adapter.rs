@@ -22,8 +22,7 @@ impl MinecraftAdapter {
 impl FlintAdapter for MinecraftAdapter {
     fn create_test_world(&self) -> Box<dyn FlintWorld> {
         // Freeze time globally first when creating test world
-        let _ = self.bot.send_command("tick freeze");
-        std::thread::sleep(std::time::Duration::from_millis(tick::COMMAND_DELAY_MS));
+        let _ = self.bot.send_command_synced("tick freeze");
 
         Box::new(MinecraftWorld {
             bot: self.bot.clone(),
@@ -86,8 +85,7 @@ impl Drop for MinecraftWorld {
                 .bot
                 .send_command(&format!("kill @e[tag={}]", entity.tag));
         }
-        let _ = self.bot.send_command("tick unfreeze");
-        std::thread::sleep(std::time::Duration::from_millis(tick::COMMAND_DELAY_MS));
+        let _ = self.bot.send_command_synced("tick unfreeze");
     }
 }
 
@@ -129,7 +127,7 @@ impl FlintWorld for MinecraftWorld {
             world_pos[0], world_pos[1], world_pos[2], block_spec
         );
         let expected = block.clone();
-        if let Err(error) = self.bot.send_command(&cmd).and_then(|()| {
+        if let Err(error) = self.bot.send_command_synced(&cmd).and_then(|()| {
             self.bot.wait_until("block synchronization", || {
                 let Ok(Some(actual_block_str)) = self.bot.get_block(world_pos) else {
                     return false;
@@ -262,7 +260,8 @@ impl FlintWorld for MinecraftWorld {
             inventory_owner: self.bot.allocate_inventory_owner(),
             selected_hotbar: 1,
             inventory: std::collections::HashMap::new(),
-            pose: None,
+            position: None,
+            rotation: None,
             offset: self.offset,
             game_mode: GameMode::Creative,
         })
@@ -357,7 +356,8 @@ pub struct MinecraftPlayer {
     inventory_owner: u64,
     selected_hotbar: u8,
     inventory: std::collections::HashMap<PlayerSlot, Item>,
-    pose: Option<([f64; 3], Option<[f32; 2]>)>,
+    position: Option<[f64; 3]>,
+    rotation: Option<[f32; 2]>,
     offset: [i32; 3],
     game_mode: GameMode,
 }
@@ -368,7 +368,7 @@ impl FlintPlayer for MinecraftPlayer {
     }
 
     fn set_slot(&mut self, slot: PlayerSlot, item: Option<&Item>) {
-        self.restore_inventory();
+        self.restore_state();
         let slot_name = slot_to_minecraft_name(slot);
         let cmd = if let Some(it) = item {
             self.inventory.insert(slot, it.clone());
@@ -382,8 +382,7 @@ impl FlintPlayer for MinecraftPlayer {
         };
         let _ = self.bot.send_command(&cmd);
         let _ = self.bot.wait_for_inventory(&self.inventory);
-        self.bot
-            .record_inventory(self.inventory_owner, &self.inventory, self.selected_hotbar);
+        self.record_state();
     }
 
     fn get_slot(&self, slot: PlayerSlot, _requested_data: Vec<String>) -> Option<Item> {
@@ -391,11 +390,10 @@ impl FlintPlayer for MinecraftPlayer {
     }
 
     fn select_hotbar(&mut self, slot: u8) {
-        self.restore_inventory();
+        self.restore_state();
         self.selected_hotbar = slot;
         let _ = self.bot.select_hotbar(slot);
-        self.bot
-            .record_inventory(self.inventory_owner, &self.inventory, self.selected_hotbar);
+        self.record_state();
     }
 
     fn selected_hotbar(&self) -> u8 {
@@ -408,26 +406,15 @@ impl FlintPlayer for MinecraftPlayer {
             pos[1] + f64::from(self.offset[1]),
             pos[2] + f64::from(self.offset[2]),
         ];
-        self.pose = Some((world_pos, rot));
+        self.restore_state();
+        self.position = Some(world_pos);
+        self.rotation = rot;
         let _ = self.bot.teleport(world_pos, rot);
+        self.record_state();
     }
 
     fn interact(&mut self) {
-        let mode_str = match self.game_mode {
-            GameMode::Survival => "survival",
-            GameMode::Creative => "creative",
-            GameMode::Adventure => "adventure",
-            GameMode::Spectator => "spectator",
-        };
-        let _ = self
-            .bot
-            .send_command(&format!("gamemode {} flintmc_testbot", mode_str));
-        std::thread::sleep(std::time::Duration::from_millis(tick::COMMAND_DELAY_MS));
-        self.restore_inventory();
-        let _ = self.bot.keep_airborne();
-        if let Some((pos, rot)) = self.pose {
-            let _ = self.bot.teleport(pos, rot);
-        }
+        self.restore_state();
         let _ = self.bot.interact();
 
         if self.game_mode == GameMode::Survival || self.game_mode == GameMode::Adventure {
@@ -452,11 +439,11 @@ impl FlintPlayer for MinecraftPlayer {
             }
         }
         let _ = self.bot.wait_for_inventory(&self.inventory);
-        self.bot
-            .record_inventory(self.inventory_owner, &self.inventory, self.selected_hotbar);
+        self.record_state();
     }
 
     fn set_game_mode(&mut self, mode: GameMode) {
+        self.restore_state();
         self.game_mode = mode;
         let mode_str = match mode {
             GameMode::Survival => "survival",
@@ -465,15 +452,35 @@ impl FlintPlayer for MinecraftPlayer {
             GameMode::Spectator => "spectator",
         };
         let cmd = format!("gamemode {} flintmc_testbot", mode_str);
-        let _ = self.bot.send_command(&cmd);
-        std::thread::sleep(std::time::Duration::from_millis(tick::COMMAND_DELAY_MS));
+        let _ = self.bot.send_command_synced(&cmd);
+        self.record_state();
     }
 }
 
 impl MinecraftPlayer {
     pub(crate) fn restore_inventory(&mut self) {
-        let _ =
-            self.bot
-                .restore_inventory(self.inventory_owner, &self.inventory, self.selected_hotbar);
+        self.restore_state();
+    }
+
+    fn restore_state(&mut self) {
+        let _ = self.bot.restore_player(
+            self.inventory_owner,
+            &self.inventory,
+            self.selected_hotbar,
+            self.position,
+            self.rotation,
+            self.game_mode,
+        );
+    }
+
+    fn record_state(&self) {
+        self.bot.record_player(
+            self.inventory_owner,
+            &self.inventory,
+            self.selected_hotbar,
+            self.position,
+            self.rotation,
+            self.game_mode,
+        );
     }
 }
