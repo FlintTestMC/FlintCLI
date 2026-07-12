@@ -103,7 +103,8 @@ impl Drop for MinecraftWorld {
                 .bot
                 .send_command(&format!("kill @e[tag={}]", entity.tag));
         }
-        let _ = self.bot.send_command_synced("tick unfreeze");
+        // Tick state is shared by the whole server, not owned by an individual
+        // test world. The executor unfreezes once after the complete batch.
     }
 }
 
