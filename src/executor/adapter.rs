@@ -472,13 +472,8 @@ impl MinecraftPlayer {
                 9 => PlayerSlot::Hotbar9,
                 _ => anyhow::bail!("invalid selected hotbar slot: {}", self.selected_hotbar),
             };
-            if let Some(item) = self.inventory.get_mut(&slot) {
-                if item.count > 1 {
-                    item.count -= 1;
-                } else {
-                    self.inventory.remove(&slot);
-                }
-            }
+            let observed = self.bot.inventory_slot(slot)?;
+            reconcile_inventory_slot(&mut self.inventory, slot, observed);
         }
         self.bot.wait_for_inventory(&self.inventory)?;
         self.record_state();
@@ -523,6 +518,62 @@ impl MinecraftPlayer {
             self.position,
             self.rotation,
             self.game_mode,
+        );
+    }
+}
+
+fn reconcile_inventory_slot(
+    inventory: &mut std::collections::HashMap<PlayerSlot, Item>,
+    slot: PlayerSlot,
+    observed: Option<Item>,
+) {
+    match observed {
+        Some(item) => {
+            inventory.insert(slot, item);
+        }
+        None => {
+            inventory.remove(&slot);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reconcile_inventory_slot;
+    use flint_core::test_spec::{Item, PlayerSlot};
+    use std::collections::HashMap;
+
+    #[test]
+    fn interaction_does_not_consume_item_when_server_reports_unchanged_stack() {
+        let slot = PlayerSlot::Hotbar1;
+        let mut inventory = HashMap::from([(slot, Item::with_count("minecraft:stick", 2))]);
+
+        reconcile_inventory_slot(
+            &mut inventory,
+            slot,
+            Some(Item::with_count("minecraft:stick", 2)),
+        );
+
+        assert_eq!(
+            inventory.get(&slot),
+            Some(&Item::with_count("minecraft:stick", 2))
+        );
+    }
+
+    #[test]
+    fn interaction_uses_consumed_stack_reported_by_server() {
+        let slot = PlayerSlot::Hotbar1;
+        let mut inventory = HashMap::from([(slot, Item::with_count("minecraft:oak_sign", 2))]);
+
+        reconcile_inventory_slot(
+            &mut inventory,
+            slot,
+            Some(Item::with_count("minecraft:oak_sign", 1)),
+        );
+
+        assert_eq!(
+            inventory.get(&slot),
+            Some(&Item::with_count("minecraft:oak_sign", 1))
         );
     }
 }

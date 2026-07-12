@@ -685,6 +685,40 @@ impl TestBot {
         })
     }
 
+    /// Read a player inventory slot from the state reported by the server.
+    pub fn inventory_slot(&self, slot: PlayerSlot) -> Result<Option<Item>> {
+        let client_guard = self.get_client()?;
+        let client = client_guard
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Bot not initialized"))?;
+        let menu = client.menu()?;
+        let player = menu
+            .try_as_player()
+            .ok_or_else(|| anyhow::anyhow!("Bot does not have a player inventory open"))?;
+        let actual = match slot {
+            PlayerSlot::Hotbar1 => &player.inventory[27],
+            PlayerSlot::Hotbar2 => &player.inventory[28],
+            PlayerSlot::Hotbar3 => &player.inventory[29],
+            PlayerSlot::Hotbar4 => &player.inventory[30],
+            PlayerSlot::Hotbar5 => &player.inventory[31],
+            PlayerSlot::Hotbar6 => &player.inventory[32],
+            PlayerSlot::Hotbar7 => &player.inventory[33],
+            PlayerSlot::Hotbar8 => &player.inventory[34],
+            PlayerSlot::Hotbar9 => &player.inventory[35],
+            PlayerSlot::OffHand => &player.offhand,
+            PlayerSlot::Helmet => &player.armor[0],
+            PlayerSlot::Chestplate => &player.armor[1],
+            PlayerSlot::Leggings => &player.armor[2],
+            PlayerSlot::Boots => &player.armor[3],
+        };
+        if actual.is_empty() {
+            return Ok(None);
+        }
+        let count = u8::try_from(actual.count())
+            .map_err(|_| anyhow::anyhow!("invalid inventory count: {}", actual.count()))?;
+        Ok(Some(Item::with_count(actual.kind().to_str(), count)))
+    }
+
     pub(crate) fn wait_until(
         &self,
         operation: &str,
@@ -713,6 +747,14 @@ impl TestBot {
             for pos in targets {
                 observation.push_str(&format!("|{:?}", world.get_block_state(pos)));
             }
+        }
+        if let (Ok(selected), Ok(menu)) = (client.selected_hotbar_slot(), client.menu())
+            && let Some(player) = menu.try_as_player()
+        {
+            observation.push_str(&format!(
+                "|held:{:?}",
+                player.inventory[27 + usize::from(selected)]
+            ));
         }
         Ok(observation)
     }
