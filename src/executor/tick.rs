@@ -210,13 +210,5 @@ pub fn sprint_ticks(bot: &mut TestBot, ticks: u32, verbose: bool) -> Result<u64>
         }
     }
 
-    // Timeout - return default
-    if verbose {
-        println!(
-            "    {} Sprint {} ticks (no completion message received)",
-            "⚡".dimmed(),
-            ticks
-        );
-    }
-    Ok(MIN_RETRY_DELAY_MS)
+    anyhow::bail!("Sprint verification timeout: no completion message for {ticks} ticks")
 }
