@@ -724,11 +724,7 @@ impl TestExecutor {
             events.run_completed(asserts_passed, asserts_failed)?;
         }
 
-        // Unfreeze time
-        self.bot.send_command("tick unfreeze")?;
-        self.forceload_regions(tests_with_offsets, false)?;
-
-        // Clean up remaining tests
+        // Clean up remaining tests while their chunks are still force-loaded.
         for test_idx in 0..tests_with_offsets.len() {
             if !tests_cleaned[test_idx] {
                 let (test, offset) = &tests_with_offsets[test_idx];
@@ -757,6 +753,10 @@ impl TestExecutor {
                 self.bot.park_at(layout_center)?;
             }
         }
+
+        // Release the chunks only after cleanup has completed, then resume time.
+        self.forceload_regions(tests_with_offsets, false)?;
+        self.bot.send_command("tick unfreeze")?;
 
         // Build results
         let results: Vec<TestResult> = tests_with_offsets
