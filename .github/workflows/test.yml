@@ -155,12 +155,12 @@ jobs:
         sleep 2
 
     - name: Build FlintMC
-      run: cargo build --release
+      run: cargo build
 
     - name: Run FlintMC Tests
       run: |
         # Run all example tests
-        cargo run --release -- FlintBenchmark/tests/ --server localhost:25565 --recursive --verbose
+        cargo run -- FlintBenchmark/tests/ --server localhost:25565 --recursive --verbose
       timeout-minutes: 10
 
     - name: Stop Minecraft Server
