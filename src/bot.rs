@@ -13,6 +13,7 @@ const INIT_WAIT_ATTEMPTS: u32 = 50;
 const INIT_WAIT_DELAY_MS: u64 = 100;
 const GAME_STATE_WAIT_ATTEMPTS: u32 = 100;
 const STATE_SYNC_TIMEOUT_MS: u64 = 2_000;
+const CHUNK_SYNC_TIMEOUT_MS: u64 = 10_000;
 const STATE_SYNC_POLL_MS: u64 = 5;
 // Must be configured during Event::Init, before Azalea allocates PartialWorld.
 // Vanilla servers support at most 32 chunks and may clamp this request lower.
@@ -709,10 +710,30 @@ impl TestBot {
     pub(crate) fn wait_until(
         &self,
         operation: &str,
+        predicate: impl FnMut() -> bool,
+    ) -> Result<()> {
+        self.wait_until_timeout(
+            operation,
+            std::time::Duration::from_millis(STATE_SYNC_TIMEOUT_MS),
+            predicate,
+        )
+    }
+
+    pub(crate) fn wait_for_block_chunk(&self, pos: [i32; 3]) -> Result<()> {
+        self.wait_until_timeout(
+            "target block chunk availability",
+            std::time::Duration::from_millis(CHUNK_SYNC_TIMEOUT_MS),
+            || self.get_block(pos).is_ok_and(|block| block.is_some()),
+        )
+    }
+
+    fn wait_until_timeout(
+        &self,
+        operation: &str,
+        timeout: std::time::Duration,
         mut predicate: impl FnMut() -> bool,
     ) -> Result<()> {
-        let deadline =
-            std::time::Instant::now() + std::time::Duration::from_millis(STATE_SYNC_TIMEOUT_MS);
+        let deadline = std::time::Instant::now() + timeout;
         while std::time::Instant::now() < deadline {
             if predicate() {
                 return Ok(());
