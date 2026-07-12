@@ -300,7 +300,7 @@ fn main() -> Result<()> {
     executor.set_verbose(args.verbose);
     executor.set_quiet(args.quiet || !matches!(args.format, OutputFormat::Pretty));
     executor.set_fail_fast(args.fail_fast);
-    executor.set_enable_breakpoints(false);
+    executor.set_enable_breakpoints(interactive_mode);
     if let Some(events_path) = args.emit_events.clone() {
         if test_files.len() != 1 {
             eprintln!(

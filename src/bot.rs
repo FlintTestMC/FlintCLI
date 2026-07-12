@@ -1,5 +1,5 @@
 use anyhow::Result;
-use azalea::app::{App, Plugin};
+use azalea::app::{App, Plugin, Update};
 use azalea::ecs::schedule::IntoScheduleConfigs;
 use azalea::prelude::*;
 use flint_core::test_spec::{GameMode, Item, PlayerSlot};
@@ -19,15 +19,23 @@ const STATE_SYNC_POLL_MS: u64 = 5;
 const CLIENT_VIEW_DISTANCE: u8 = 32;
 
 type ChatReceiver = std::sync::mpsc::Receiver<(Option<String>, String)>;
+type AckReceiver = std::sync::mpsc::Receiver<String>;
+type UpdateReceiver = std::sync::mpsc::Receiver<()>;
 
-struct DisableBotPhysicsPlugin;
+struct TestBotRuntimePlugin {
+    update_tx: std::sync::mpsc::SyncSender<()>,
+}
 
-impl Plugin for DisableBotPhysicsPlugin {
+impl Plugin for TestBotRuntimePlugin {
     fn build(&self, app: &mut App) {
         app.configure_sets(
             azalea::core::tick::GameTick,
             azalea::physics::PhysicsSystems.run_if(|| false),
         );
+        let update_tx = self.update_tx.clone();
+        app.add_systems(Update, move || {
+            let _ = update_tx.try_send(());
+        });
     }
 }
 
@@ -46,6 +54,7 @@ struct State {
     client_handle: Arc<RwLock<Option<Client>>>,
     in_game: Arc<AtomicBool>,
     chat_tx: Option<std::sync::mpsc::Sender<(Option<String>, String)>>,
+    ack_tx: Option<std::sync::mpsc::Sender<String>>,
     world_ready_tx: Option<std::sync::mpsc::SyncSender<()>>,
     view_distance: Arc<AtomicU32>,
     simulation_distance: Arc<AtomicU32>,
@@ -57,6 +66,7 @@ impl Default for State {
             client_handle: Arc::new(RwLock::new(None)),
             in_game: Arc::new(AtomicBool::new(false)),
             chat_tx: None,
+            ack_tx: None,
             world_ready_tx: None,
             view_distance: Arc::new(AtomicU32::new(0)),
             simulation_distance: Arc::new(AtomicU32::new(0)),
@@ -69,6 +79,8 @@ pub struct TestBot {
     client: Option<Arc<RwLock<Option<Client>>>>,
     in_game: Option<Arc<AtomicBool>>,
     chat_rx: Option<Arc<parking_lot::Mutex<ChatReceiver>>>,
+    ack_rx: Option<Arc<parking_lot::Mutex<AckReceiver>>>,
+    update_rx: Option<Arc<parking_lot::Mutex<UpdateReceiver>>>,
     next_inventory_owner: Arc<AtomicU64>,
     next_command_ack: Arc<AtomicU64>,
     active_player: Arc<parking_lot::Mutex<ActivePlayer>>,
@@ -82,6 +94,8 @@ impl Default for TestBot {
             client: None,
             in_game: None,
             chat_rx: None,
+            ack_rx: None,
+            update_rx: None,
             next_inventory_owner: Arc::new(AtomicU64::new(1)),
             next_command_ack: Arc::new(AtomicU64::new(1)),
             active_player: Arc::new(parking_lot::Mutex::new(ActivePlayer::default())),
@@ -111,10 +125,13 @@ impl TestBot {
 
         // Create chat channel
         let (chat_tx, chat_rx) = std::sync::mpsc::channel();
+        let (ack_tx, ack_rx) = std::sync::mpsc::channel();
+        let (update_tx, update_rx) = std::sync::mpsc::sync_channel(1);
         let (world_ready_tx, world_ready_rx) = std::sync::mpsc::sync_channel(1);
 
         let state = State {
             chat_tx: Some(chat_tx),
+            ack_tx: Some(ack_tx),
             world_ready_tx: Some(world_ready_tx),
             ..Default::default()
         };
@@ -165,7 +182,11 @@ impl TestBot {
                                 None
                             };
 
-                            if let Some(ref tx) = state.chat_tx {
+                            if message.contains("__flintmc_ack_") {
+                                if let Some(tx) = &state.ack_tx {
+                                    let _ = tx.send(message);
+                                }
+                            } else if let Some(ref tx) = state.chat_tx {
                                 let _ = tx.send((sender, message));
                             }
                         }
@@ -210,7 +231,7 @@ impl TestBot {
                 }
 
                 let result = ClientBuilder::new()
-                    .add_plugins(DisableBotPhysicsPlugin)
+                    .add_plugins(TestBotRuntimePlugin { update_tx })
                     .set_handler(handler)
                     .set_state(state)
                     .start(account, server_owned.as_str())
@@ -250,6 +271,8 @@ impl TestBot {
         self.client = Some(client_handle);
         self.in_game = Some(in_game);
         self.chat_rx = Some(Arc::new(parking_lot::Mutex::new(chat_rx)));
+        self.ack_rx = Some(Arc::new(parking_lot::Mutex::new(ack_rx)));
+        self.update_rx = Some(Arc::new(parking_lot::Mutex::new(update_rx)));
         self.view_distance = view_distance;
         self.simulation_distance = simulation_distance;
         tracing::info!("Connected successfully and in game state");
@@ -390,9 +413,13 @@ impl TestBot {
         let deadline =
             std::time::Instant::now() + std::time::Duration::from_millis(STATE_SYNC_TIMEOUT_MS);
         while std::time::Instant::now() < deadline {
-            if self
-                .recv_chat_timeout(std::time::Duration::from_millis(STATE_SYNC_POLL_MS))
-                .is_some_and(|(_, message)| message.contains(&marker))
+            let Some(ack_rx) = &self.ack_rx else {
+                anyhow::bail!("command acknowledgement channel is unavailable");
+            };
+            if ack_rx
+                .lock()
+                .recv_timeout(std::time::Duration::from_millis(STATE_SYNC_POLL_MS))
+                .is_ok_and(|message| message.contains(&marker))
             {
                 return Ok(());
             }
@@ -404,30 +431,14 @@ impl TestBot {
     /// emitted after earlier commands/ticks. After observing it, wait for a subsequent
     /// Azalea ECS update so packet-driven world mutations are visible to readers.
     pub fn sync_client_world(&self) -> Result<()> {
-        let client = {
-            let client_guard = self.get_client()?;
-            client_guard
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("Bot not initialized"))?
-                .clone()
-        };
-        let mut updates = client.get_update_broadcaster();
-
         self.send_command_synced("execute if entity flintmc_testbot run return 1")?;
-
-        // Ignore frames completed before the acknowledgement reached the chat handler.
-        loop {
-            match updates.try_recv() {
-                Ok(()) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
-                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
-                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
-                    anyhow::bail!("Azalea update broadcaster closed during world synchronization")
-                }
-            }
-        }
-
-        updates
-            .blocking_recv()
+        let Some(update_rx) = &self.update_rx else {
+            anyhow::bail!("Azalea update channel is unavailable");
+        };
+        let update_rx = update_rx.lock();
+        while update_rx.try_recv().is_ok() {}
+        update_rx
+            .recv_timeout(std::time::Duration::from_millis(STATE_SYNC_TIMEOUT_MS))
             .map_err(|error| anyhow::anyhow!("failed waiting for Azalea world update: {error}"))?;
         Ok(())
     }

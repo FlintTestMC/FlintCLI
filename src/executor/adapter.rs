@@ -76,6 +76,24 @@ impl MinecraftWorld {
     fn entity_selector(entity: &MinecraftEntity) -> String {
         format!("@e[tag={},type={},limit=1]", entity.tag, entity.entity_type)
     }
+
+    pub(crate) fn set_block_checked(&mut self, pos: BlockPos, block: &Block) -> Result<()> {
+        let world_pos = self.world_pos(pos);
+        let block_spec = block.to_command();
+        let cmd = format!(
+            "setblock {} {} {} {}",
+            world_pos[0], world_pos[1], world_pos[2], block_spec
+        );
+        let expected = block.clone();
+        self.bot.send_command_synced(&cmd)?;
+        self.bot.wait_until("block synchronization", || {
+            let Ok(Some(actual_block_str)) = self.bot.get_block(world_pos) else {
+                return false;
+            };
+            let actual = block::make_block(&block::extract_block_id(&actual_block_str));
+            actual.id == expected.id && block::properties_match(&actual, &expected)
+        })
+    }
 }
 
 impl Drop for MinecraftWorld {
@@ -120,28 +138,11 @@ impl FlintWorld for MinecraftWorld {
     }
 
     fn set_block(&mut self, pos: BlockPos, block: &Block) {
-        let world_pos = self.world_pos(pos);
-        let block_spec = block.to_command();
-        let cmd = format!(
-            "setblock {} {} {} {}",
-            world_pos[0], world_pos[1], world_pos[2], block_spec
-        );
-        let expected = block.clone();
-        if let Err(error) = self.bot.send_command_synced(&cmd).and_then(|()| {
-            self.bot.wait_until("block synchronization", || {
-                let Ok(Some(actual_block_str)) = self.bot.get_block(world_pos) else {
-                    return false;
-                };
-                let actual = block::make_block(&block::extract_block_id(&actual_block_str));
-                actual.id == expected.id && block::properties_match(&actual, &expected)
-            })
-        }) {
+        if let Err(error) = self.set_block_checked(pos, block) {
             tracing::error!(
-                "Failed to set block at [{}, {}, {}] to {}: {}",
-                world_pos[0],
-                world_pos[1],
-                world_pos[2],
-                block_spec,
+                "Failed to set block at {:?} to {}: {}",
+                pos,
+                block.id,
                 error
             );
         }
@@ -368,21 +369,9 @@ impl FlintPlayer for MinecraftPlayer {
     }
 
     fn set_slot(&mut self, slot: PlayerSlot, item: Option<&Item>) {
-        self.restore_state();
-        let slot_name = slot_to_minecraft_name(slot);
-        let cmd = if let Some(it) = item {
-            self.inventory.insert(slot, it.clone());
-            format!(
-                "item replace entity flintmc_testbot {} with {} {}",
-                slot_name, it.id, it.count
-            )
-        } else {
-            self.inventory.remove(&slot);
-            format!("item replace entity flintmc_testbot {} with air", slot_name)
-        };
-        let _ = self.bot.send_command(&cmd);
-        let _ = self.bot.wait_for_inventory(&self.inventory);
-        self.record_state();
+        if let Err(error) = self.set_slot_checked(slot, item) {
+            tracing::error!("Failed to set player slot {:?}: {}", slot, error);
+        }
     }
 
     fn get_slot(&self, slot: PlayerSlot, _requested_data: Vec<String>) -> Option<Item> {
@@ -390,10 +379,9 @@ impl FlintPlayer for MinecraftPlayer {
     }
 
     fn select_hotbar(&mut self, slot: u8) {
-        self.restore_state();
-        self.selected_hotbar = slot;
-        let _ = self.bot.select_hotbar(slot);
-        self.record_state();
+        if let Err(error) = self.select_hotbar_checked(slot) {
+            tracing::error!("Failed to select hotbar slot {}: {}", slot, error);
+        }
     }
 
     fn selected_hotbar(&self) -> u8 {
@@ -401,22 +389,75 @@ impl FlintPlayer for MinecraftPlayer {
     }
 
     fn teleport(&mut self, pos: [f64; 3], rot: Option<[f32; 2]>) {
+        if let Err(error) = self.teleport_checked(pos, rot) {
+            tracing::error!("Failed to teleport player: {}", error);
+        }
+    }
+
+    fn interact(&mut self) {
+        if let Err(error) = self.interact_checked() {
+            tracing::error!("Failed to interact: {}", error);
+        }
+    }
+
+    fn set_game_mode(&mut self, mode: GameMode) {
+        if let Err(error) = self.set_game_mode_checked(mode) {
+            tracing::error!("Failed to set game mode {:?}: {}", mode, error);
+        }
+    }
+}
+
+impl MinecraftPlayer {
+    pub(crate) fn set_slot_checked(&mut self, slot: PlayerSlot, item: Option<&Item>) -> Result<()> {
+        self.restore_state_checked()?;
+        if let Some(item) = item {
+            self.inventory.insert(slot, item.clone());
+        } else {
+            self.inventory.remove(&slot);
+        }
+        let slot_name = slot_to_minecraft_name(slot);
+        let command = match item {
+            Some(item) => format!(
+                "item replace entity flintmc_testbot {} with {} {}",
+                slot_name, item.id, item.count
+            ),
+            None => format!("item replace entity flintmc_testbot {} with air", slot_name),
+        };
+        self.bot.send_command_synced(&command)?;
+        self.bot.wait_for_inventory(&self.inventory)?;
+        self.record_state();
+        Ok(())
+    }
+
+    pub(crate) fn select_hotbar_checked(&mut self, slot: u8) -> Result<()> {
+        self.restore_state_checked()?;
+        self.bot.select_hotbar(slot)?;
+        self.selected_hotbar = slot;
+        self.record_state();
+        Ok(())
+    }
+
+    pub(crate) fn teleport_checked(
+        &mut self,
+        pos: [f64; 3],
+        rotation: Option<[f32; 2]>,
+    ) -> Result<()> {
+        self.restore_state_checked()?;
         let world_pos = [
             pos[0] + f64::from(self.offset[0]),
             pos[1] + f64::from(self.offset[1]),
             pos[2] + f64::from(self.offset[2]),
         ];
-        self.restore_state();
+        self.bot.teleport(world_pos, rotation)?;
         self.position = Some(world_pos);
-        self.rotation = rot;
-        let _ = self.bot.teleport(world_pos, rot);
+        self.rotation = rotation;
         self.record_state();
+        Ok(())
     }
 
-    fn interact(&mut self) {
-        self.restore_state();
-        let _ = self.bot.interact();
-
+    pub(crate) fn interact_checked(&mut self) -> Result<()> {
+        self.restore_state_checked()?;
+        self.bot.interact()?;
         if self.game_mode == GameMode::Survival || self.game_mode == GameMode::Adventure {
             let slot = match self.selected_hotbar {
                 1 => PlayerSlot::Hotbar1,
@@ -428,7 +469,7 @@ impl FlintPlayer for MinecraftPlayer {
                 7 => PlayerSlot::Hotbar7,
                 8 => PlayerSlot::Hotbar8,
                 9 => PlayerSlot::Hotbar9,
-                _ => return,
+                _ => anyhow::bail!("invalid selected hotbar slot: {}", self.selected_hotbar),
             };
             if let Some(item) = self.inventory.get_mut(&slot) {
                 if item.count > 1 {
@@ -438,39 +479,39 @@ impl FlintPlayer for MinecraftPlayer {
                 }
             }
         }
-        let _ = self.bot.wait_for_inventory(&self.inventory);
+        self.bot.wait_for_inventory(&self.inventory)?;
         self.record_state();
+        Ok(())
     }
 
-    fn set_game_mode(&mut self, mode: GameMode) {
-        self.restore_state();
-        self.game_mode = mode;
-        let mode_str = match mode {
+    pub(crate) fn set_game_mode_checked(&mut self, mode: GameMode) -> Result<()> {
+        self.restore_state_checked()?;
+        let mode_name = match mode {
             GameMode::Survival => "survival",
             GameMode::Creative => "creative",
             GameMode::Adventure => "adventure",
             GameMode::Spectator => "spectator",
         };
-        let cmd = format!("gamemode {} flintmc_testbot", mode_str);
-        let _ = self.bot.send_command_synced(&cmd);
+        self.bot
+            .send_command_synced(&format!("gamemode {mode_name} flintmc_testbot"))?;
+        self.game_mode = mode;
         self.record_state();
-    }
-}
-
-impl MinecraftPlayer {
-    pub(crate) fn restore_inventory(&mut self) {
-        self.restore_state();
+        Ok(())
     }
 
-    fn restore_state(&mut self) {
-        let _ = self.bot.restore_player(
+    pub(crate) fn restore_inventory(&mut self) -> Result<()> {
+        self.restore_state_checked()
+    }
+
+    fn restore_state_checked(&mut self) -> Result<()> {
+        self.bot.restore_player(
             self.inventory_owner,
             &self.inventory,
             self.selected_hotbar,
             self.position,
             self.rotation,
             self.game_mode,
-        );
+        )
     }
 
     fn record_state(&self) {

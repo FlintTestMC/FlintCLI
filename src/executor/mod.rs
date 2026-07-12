@@ -509,25 +509,26 @@ impl TestExecutor {
             })
             .collect();
 
-        let mut players: Vec<Option<Box<dyn FlintPlayer>>> = tests_with_offsets
-            .iter()
-            .enumerate()
-            .map(|(idx, (spec, _offset))| {
-                if let Some(setup) = &spec.setup
-                    && let Some(player_config) = setup.player.as_ref()
-                {
-                    let mut p = worlds[idx].create_player();
-                    for (slot, item) in &player_config.inventory {
-                        p.set_slot(*slot, Some(item));
-                    }
-                    p.select_hotbar(player_config.selected_hotbar);
-                    p.set_game_mode(player_config.game_mode);
-                    Some(p)
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let mut players: Vec<Option<Box<dyn FlintPlayer>>> =
+            Vec::with_capacity(tests_with_offsets.len());
+        for (idx, (spec, _offset)) in tests_with_offsets.iter().enumerate() {
+            let Some(player_config) = spec.setup.as_ref().and_then(|setup| setup.player.as_ref())
+            else {
+                players.push(None);
+                continue;
+            };
+            let mut player = worlds[idx].create_player();
+            let minecraft_player = player
+                .as_any_mut()
+                .downcast_mut::<adapter::MinecraftPlayer>()
+                .ok_or_else(|| anyhow::anyhow!("unsupported FlintPlayer implementation"))?;
+            for (slot, item) in &player_config.inventory {
+                minecraft_player.set_slot_checked(*slot, Some(item))?;
+            }
+            minecraft_player.select_hotbar_checked(player_config.selected_hotbar)?;
+            minecraft_player.set_game_mode_checked(player_config.game_mode)?;
+            players.push(Some(player));
+        }
 
         // Execute merged timeline
         let mut current_tick = 0;

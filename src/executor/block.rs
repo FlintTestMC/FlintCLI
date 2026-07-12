@@ -79,11 +79,9 @@ pub fn extract_block_id(debug_str: &str) -> String {
                 continue;
             }
             if let Some((k, v)) = part.split_once(':') {
-                pairs.push(format!(
-                    "{}={}",
-                    k.trim().to_lowercase(),
-                    v.trim().to_lowercase()
-                ));
+                let key = k.trim().to_lowercase();
+                let key = if key == "kind" { "type" } else { &key };
+                pairs.push(format!("{}={}", key, v.trim().to_lowercase()));
             }
         }
         if !pairs.is_empty() {
@@ -159,6 +157,13 @@ mod tests {
         assert!(result.starts_with("minecraft:oak_fence["));
         assert!(result.contains("east=false"));
         assert!(result.contains("north=true"));
+    }
+
+    #[test]
+    fn test_extract_block_id_normalizes_generated_kind_property() {
+        let input = "BlockState(id: 1, OakSlab { kind: Double, waterlogged: false })";
+        let result = extract_block_id(input);
+        assert_eq!(result, "minecraft:oak_slab[type=double,waterlogged=false]");
     }
 
     #[test]

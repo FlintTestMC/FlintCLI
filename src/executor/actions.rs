@@ -23,7 +23,7 @@ pub fn execute_action(
 ) -> Result<ActionOutcome> {
     match &entry.action_type {
         ActionType::Place { pos, block } => {
-            world.set_block(*pos, block);
+            world.set_block_checked(*pos, block)?;
             if verbose {
                 println!(
                     "    {} Tick {}: place at [{}, {}, {}] = {}",
@@ -40,7 +40,7 @@ pub fn execute_action(
 
         ActionType::PlaceEach { blocks } => {
             for placement in blocks {
-                world.set_block(placement.pos, &placement.block);
+                world.set_block_checked(placement.pos, &placement.block)?;
                 if verbose {
                     println!(
                         "    {} Tick {}: place at [{}, {}, {}] = {}",
@@ -78,7 +78,7 @@ pub fn execute_action(
                 world_max[2],
                 block_spec
             );
-            world.bot.send_command(&cmd)?;
+            world.bot.send_command_synced(&cmd)?;
 
             if verbose {
                 println!(
@@ -102,7 +102,7 @@ pub fn execute_action(
                 id: "minecraft:air".to_string(),
                 properties: Default::default(),
             };
-            world.set_block(*pos, &air);
+            world.set_block_checked(*pos, &air)?;
             if verbose {
                 println!(
                     "    {} Tick {}: remove at [{}, {}, {}]",
@@ -220,7 +220,7 @@ pub fn execute_action(
                     AssertType::Inventory(check) => {
                         let actual = if let Some(p) = player {
                             if let Some(p) = p.as_any_mut().downcast_mut::<MinecraftPlayer>() {
-                                p.restore_inventory();
+                                p.restore_inventory()?;
                             }
                             p.get_slot(check.slot, Vec::new())
                         } else {
@@ -327,7 +327,11 @@ pub fn execute_action(
             }
             if entity_alias == "player" {
                 let p = player.get_or_insert_with(|| world.create_player());
-                p.teleport(*pos, *rot);
+                let p = p
+                    .as_any_mut()
+                    .downcast_mut::<MinecraftPlayer>()
+                    .ok_or_else(|| anyhow::anyhow!("unsupported FlintPlayer implementation"))?;
+                p.teleport_checked(*pos, *rot)?;
             } else {
                 world.teleport_entity(entity_alias, *pos, *rot);
             }
@@ -341,29 +345,41 @@ pub fn execute_action(
             let p = player
                 .as_mut()
                 .expect("interact requires an existing player");
+            let p = p
+                .as_any_mut()
+                .downcast_mut::<MinecraftPlayer>()
+                .ok_or_else(|| anyhow::anyhow!("unsupported FlintPlayer implementation"))?;
             if let Some(item_id) = item {
                 let it = Item::new(item_id);
-                p.set_slot(PlayerSlot::Hotbar1, Some(&it));
-                p.select_hotbar(1);
+                p.set_slot_checked(PlayerSlot::Hotbar1, Some(&it))?;
+                p.select_hotbar_checked(1)?;
             }
-            p.interact();
+            p.interact_checked()?;
             Ok(ActionOutcome::Action)
         }
 
         ActionType::SetSlot { slot, item, count } => {
             let p = player.get_or_insert_with(|| world.create_player());
+            let p = p
+                .as_any_mut()
+                .downcast_mut::<MinecraftPlayer>()
+                .ok_or_else(|| anyhow::anyhow!("unsupported FlintPlayer implementation"))?;
             if let Some(item_id) = item {
                 let it = Item::with_count(item_id, *count);
-                p.set_slot(*slot, Some(&it));
+                p.set_slot_checked(*slot, Some(&it))?;
             } else {
-                p.set_slot(*slot, None);
+                p.set_slot_checked(*slot, None)?;
             }
             Ok(ActionOutcome::Action)
         }
 
         ActionType::SelectHotbar { slot } => {
             let p = player.get_or_insert_with(|| world.create_player());
-            p.select_hotbar(*slot);
+            let p = p
+                .as_any_mut()
+                .downcast_mut::<MinecraftPlayer>()
+                .ok_or_else(|| anyhow::anyhow!("unsupported FlintPlayer implementation"))?;
+            p.select_hotbar_checked(*slot)?;
             Ok(ActionOutcome::Action)
         }
     }
