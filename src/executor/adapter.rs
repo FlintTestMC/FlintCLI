@@ -85,7 +85,8 @@ impl MinecraftWorld {
             world_pos[0], world_pos[1], world_pos[2], block_spec
         );
         let expected = block.clone();
-        self.bot.send_command_synced(&cmd)?;
+        self.bot.send_command(&cmd)?;
+        self.bot.sync_client_world()?;
         self.bot.wait_until("block synchronization", || {
             let Ok(Some(actual_block_str)) = self.bot.get_block(world_pos) else {
                 return false;
