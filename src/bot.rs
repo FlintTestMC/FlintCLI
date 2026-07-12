@@ -497,6 +497,18 @@ impl TestBot {
             .hit_result()?
             .as_block_hit_result_if_not_miss()
             .cloned();
+        let targets = block_hit.as_ref().map(|hit| {
+            let normal = hit.direction.normal();
+            [
+                hit.block_pos,
+                azalea::BlockPos::new(
+                    hit.block_pos.x + normal.x,
+                    hit.block_pos.y + normal.y,
+                    hit.block_pos.z + normal.z,
+                ),
+            ]
+        });
+        let before = self.interaction_observation(&client, targets)?;
         if let Some(hit) = block_hit {
             client.block_interact(hit.block_pos);
         } else {
@@ -506,6 +518,18 @@ impl TestBot {
         let _ = updates.blocking_recv();
         let _ = ticks.blocking_recv();
         let _ = ticks.blocking_recv();
+
+        // A changed block or held stack is a useful synchronization barrier, but
+        // no lasting change is also a valid interaction result (for example,
+        // trying to ignite an undersized Nether portal). Wait briefly for an
+        // observable update without turning an unchanged result into an error.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        while std::time::Instant::now() < deadline {
+            if self.interaction_observation(&client, targets)? != before {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(STATE_SYNC_POLL_MS));
+        }
         Ok(())
     }
 
@@ -717,6 +741,30 @@ impl TestBot {
             std::thread::sleep(std::time::Duration::from_millis(STATE_SYNC_POLL_MS));
         }
         anyhow::bail!("Timed out waiting for {operation}");
+    }
+
+    fn interaction_observation(
+        &self,
+        client: &Client,
+        targets: Option<[azalea::BlockPos; 2]>,
+    ) -> Result<String> {
+        let mut observation = String::new();
+        if let Some(targets) = targets {
+            let world = client.world()?;
+            let world = world.read();
+            for pos in targets {
+                observation.push_str(&format!("|{:?}", world.get_block_state(pos)));
+            }
+        }
+        if let (Ok(selected), Ok(menu)) = (client.selected_hotbar_slot(), client.menu())
+            && let Some(player) = menu.try_as_player()
+        {
+            observation.push_str(&format!(
+                "|held:{:?}",
+                player.inventory[27 + usize::from(selected)]
+            ));
+        }
+        Ok(observation)
     }
 
     pub fn get_block(&self, pos: [i32; 3]) -> Result<Option<String>> {
