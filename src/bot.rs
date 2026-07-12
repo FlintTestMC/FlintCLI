@@ -401,9 +401,35 @@ impl TestBot {
     }
 
     /// Fence server world changes against Azalea's packet processing. The marker is
-    /// emitted after earlier commands/ticks and received after preceding world packets.
+    /// emitted after earlier commands/ticks. After observing it, wait for a subsequent
+    /// Azalea ECS update so packet-driven world mutations are visible to readers.
     pub fn sync_client_world(&self) -> Result<()> {
-        self.send_command_synced("execute if entity flintmc_testbot run return 1")
+        let client = {
+            let client_guard = self.get_client()?;
+            client_guard
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Bot not initialized"))?
+                .clone()
+        };
+        let mut updates = client.get_update_broadcaster();
+
+        self.send_command_synced("execute if entity flintmc_testbot run return 1")?;
+
+        // Ignore frames completed before the acknowledgement reached the chat handler.
+        loop {
+            match updates.try_recv() {
+                Ok(()) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                    anyhow::bail!("Azalea update broadcaster closed during world synchronization")
+                }
+            }
+        }
+
+        updates
+            .blocking_recv()
+            .map_err(|error| anyhow::anyhow!("failed waiting for Azalea world update: {error}"))?;
+        Ok(())
     }
 
     pub fn teleport(&self, pos: [f64; 3], rot: Option<[f32; 2]>) -> Result<()> {
