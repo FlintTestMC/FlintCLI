@@ -12,6 +12,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        submodules: "true"
 
     - name: Set up Java
       uses: actions/setup-java@v4
@@ -42,7 +44,7 @@ jobs:
         mkdir -p minecraft-server
         cd minecraft-server
         # Download Fabric 26.1.2 (latest compatible version)
-        wget -O server.jar https://meta.fabricmc.net/v2/versions/loader/26.1.2/0.19.2/1.1.1/server/jar
+        wget -O server.jar https://meta.fabricmc.net/v2/versions/loader/26.2/0.19.3/1.1.1/server/jar
         echo "eula=true" > eula.txt
 
     - name: Configure Minecraft Server
@@ -55,6 +57,8 @@ jobs:
         broadcast-console-to-ops=true
         broadcast-rcon-to-ops=true
         bug-report-link=
+        chat-spam-threshold-seconds=0
+        command-spam-threshold-seconds=0
         difficulty=easy
         enable-code-of-conduct=false
         enable-jmx-monitoring=false
@@ -108,14 +112,14 @@ jobs:
         resource-pack-sha1=
         server-ip=
         server-port=25565
-        simulation-distance=10
+        simulation-distance=16
         spawn-protection=16
         status-heartbeat-interval=0
         sync-chunk-writes=true
         text-filtering-config=
         text-filtering-version=0
         use-native-transport=true
-        view-distance=10
+        view-distance=16
         white-list=false
         EOF
 
@@ -151,12 +155,12 @@ jobs:
         sleep 2
 
     - name: Build FlintMC
-      run: cargo build --release
+      run: cargo build
 
     - name: Run FlintMC Tests
       run: |
         # Run all example tests
-        cargo run --release -- example_tests/ --server localhost:25565 --recursive --verbose
+        cargo run -- FlintBenchmark/tests/ --server localhost:25565 --recursive --verbose
       timeout-minutes: 10
 
     - name: Stop Minecraft Server

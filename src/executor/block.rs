@@ -3,6 +3,16 @@
 use flint_core::test_spec::Block;
 use rustc_hash::FxHashMap;
 
+/// Check that all expected block properties match an actual Azalea block state.
+pub fn properties_match(actual: &Block, expected: &Block) -> bool {
+    expected.properties.iter().all(|(name, expected_value)| {
+        actual
+            .properties
+            .get(name)
+            .is_some_and(|actual_value| actual_value.eq_ignore_ascii_case(expected_value))
+    })
+}
+
 /// Extract block ID and properties from Azalea debug string
 /// Input: "BlockState(id: 6795, OakFence { east: false, ... })"
 /// Output: "minecraft:oak_fence[east=false,west=false]"
@@ -69,11 +79,9 @@ pub fn extract_block_id(debug_str: &str) -> String {
                 continue;
             }
             if let Some((k, v)) = part.split_once(':') {
-                pairs.push(format!(
-                    "{}={}",
-                    k.trim().to_lowercase(),
-                    v.trim().to_lowercase()
-                ));
+                let key = k.trim().to_lowercase();
+                let key = if key == "kind" { "type" } else { &key };
+                pairs.push(format!("{}={}", key, v.trim().to_lowercase()));
             }
         }
         if !pairs.is_empty() {
@@ -116,6 +124,7 @@ pub fn make_block(block_str: &str) -> Block {
 }
 
 /// Normalize block name for comparison (remove minecraft: prefix and underscores)
+#[allow(dead_code)]
 pub fn normalize_block_name(name: &str) -> String {
     name.trim_start_matches("minecraft:")
         .to_lowercase()
@@ -123,6 +132,7 @@ pub fn normalize_block_name(name: &str) -> String {
 }
 
 /// Check if actual block matches expected block name
+#[allow(dead_code)]
 pub fn block_matches(actual: &str, expected: &str) -> bool {
     let actual_lower = actual.to_lowercase();
     let expected_normalized = normalize_block_name(expected);
@@ -150,6 +160,13 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_block_id_normalizes_generated_kind_property() {
+        let input = "BlockState(id: 1, OakSlab { kind: Double, waterlogged: false })";
+        let result = extract_block_id(input);
+        assert_eq!(result, "minecraft:oak_slab[type=double,waterlogged=false]");
+    }
+
+    #[test]
     fn test_make_block_simple() {
         let block = make_block("minecraft:stone");
         assert_eq!(block.id, "minecraft:stone");
@@ -168,5 +185,12 @@ mod tests {
         assert!(block_matches("OakFence", "minecraft:oak_fence"));
         assert!(block_matches("minecraft:oak_fence", "oak_fence"));
         assert!(!block_matches("SpruceFence", "oak_fence"));
+    }
+
+    #[test]
+    fn properties_match_requires_exact_property_names() {
+        let actual = make_block("minecraft:oak_slab[type=bottom,waterlogged=false]");
+        let expected = make_block("minecraft:oak_slab[type=bottom,waterlogged=false]");
+        assert!(properties_match(&actual, &expected));
     }
 }

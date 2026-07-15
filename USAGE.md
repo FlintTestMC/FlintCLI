@@ -21,7 +21,7 @@ flintmc [OPTIONS] --server <SERVER> [PATH]
 | `--break-after-setup` | | Pause after test setup (cleanup phase) for manual inspection |
 | `--tag <TAG>` | `-t` | Filter tests by tag. Can be specified multiple times |
 | `--interactive` | `-i` | Enter interactive mode (listen for in-game chat commands) |
-| `--action-delay <MS>` | `-d` | Delay between actions in milliseconds (default: 100) |
+| `--record <NAME>` | | Enter interactive mode and immediately start recording `NAME` |
 | `--verbose` | `-v` | Show detailed per-action output during execution |
 | `--quiet` | `-q` | Suppress the progress bar |
 | `--fail-fast` | | Stop after the first test failure |
@@ -227,7 +227,12 @@ The recorder lets you create tests by performing actions in-game. The bot watche
    ```
    The name can include `/` for subdirectories. Time is automatically frozen.
 
-3. Place and break blocks in-game. The bot scans for changes in a 10-block radius around its position.
+   You can also start recording directly from the CLI:
+   ```bash
+   flintmc -s localhost:25565 --record redstone/my_test
+   ```
+
+3. Place and break blocks in-game. The bot scans for changes in a fixed 10-block radius around the position where recording started.
 
 4. When ready to advance a tick:
    ```
@@ -241,18 +246,24 @@ The recorder lets you create tests by performing actions in-game. The bot watche
    ```
    Records the block at that position as an expected value.
 
-6. To convert all detected changes in the current tick into assertions instead of placements:
+6. Record a player interaction at the tracked player's current position and orientation:
+   ```
+   !use [item]
+   ```
+   This records a `tp` followed by an `interact`. If `item` is omitted, the test uses the player's active hand.
+
+7. To convert all detected changes in the current tick into assertions instead of placements:
    ```
    !assert_changes
    ```
 
-7. Save the test:
+8. Save the test:
    ```
    !save
    ```
    The JSON file is written to the tests directory. The test index is automatically reloaded so you can immediately run it with `!run`.
 
-8. Or discard:
+9. Or discard:
    ```
    !cancel
    ```
@@ -264,13 +275,15 @@ The recorder lets you create tests by performing actions in-game. The bot watche
 | `!record <name> [player]` | Start recording. Optional player name for position tracking |
 | `!tick` / `!next` | Snapshot changes and advance one game tick |
 | `!assert <x> <y> <z>` | Assert the block at the given coordinates |
+| `!use [item]` | Record `tp` to the tracked player's current pose, then `interact` |
 | `!assert_changes` | Convert all detected block changes to assertions |
 | `!save` | Save the recording as a JSON test file |
 | `!cancel` | Discard the recording and unfreeze time |
 
 ### Tips
 
-- The recorder auto-detects block placements and removals within scan range.
+- The recorder auto-detects block placements and removals within the fixed scan range captured when recording starts.
+- Use `!record <name> [player]` to choose which player is used for the initial scan center and later `!use` pose capture.
 - Positions are stored relative to the first block changed (origin), so tests are portable.
 - The cleanup region is computed automatically from the bounding box of all affected blocks.
 - Saved tests are tagged with `recorded` so you can filter them: `flintmc -s ... -t recorded`.
@@ -342,6 +355,20 @@ Tests are JSON files:
 { "at": 0, "do": "remove", "pos": [0, 64, 0] }
 ```
 
+**summon** -- summon an entity and assign a test-local alias:
+```json
+{
+  "at": 0,
+  "do": "summon",
+  "entity_alias": "falling",
+  "entity_type": "minecraft:falling_block",
+  "pos": [1.5, 64, 1.5],
+  "nbt": "{NoGravity:1b}"
+}
+```
+
+`nbt` is optional raw Minecraft summon NBT. FlintMC injects its internal alias tag into the final summon command.
+
 **assert** -- check block type(s):
 ```json
 {
@@ -357,6 +384,24 @@ Blocks can include state properties:
 ```json
 { "pos": [0, 64, 0], "is": { "id": "minecraft:oak_fence", "properties": { "east": "true" } } }
 ```
+
+Assertions can also check summoned entities by alias:
+```json
+{
+  "at": 1,
+  "do": "assert",
+  "checks": [
+    {
+      "entity_alias": "falling",
+      "is": "minecraft:falling_block",
+      "pos": [1.5, 64, 1.5],
+      "position_tolerance": 0.5
+    }
+  ]
+}
+```
+
+`entity_alias` is resolved by the server implementation. FlintMC keeps this alias map in its Minecraft implementation and reserves `"player"` for the bot-backed player.
 
 **assert_state** -- check a property across multiple ticks:
 ```json

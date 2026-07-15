@@ -1,5 +1,6 @@
 mod bot;
 mod executor;
+mod spatial_batch;
 
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, ValueEnum};
@@ -9,8 +10,9 @@ use flint_core::format;
 use flint_core::format::{format_number, print_concise_summary, print_test_summary};
 use flint_core::loader::TestLoader;
 use flint_core::results::AssertFailure;
-use flint_core::spatial::calculate_test_offset_default;
+use flint_core::spatial::calculate_test_offsets_for_batch_default;
 use flint_core::test_spec::{ActionType, TestSpec};
+use spatial_batch::split_tests_by_simulation_distance;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -32,7 +34,6 @@ enum OutputFormat {
 
 // Constants
 const CHUNK_SIZE: usize = 100;
-const GRID_SIZE: usize = 10; // Tests are arranged in a 10x10 grid
 const SEPARATOR_WIDTH: usize = 60;
 
 /// Print a separator line
@@ -43,14 +44,12 @@ fn print_separator() {
 /// Print chunk header
 fn print_chunk_header(chunk_idx: usize, total_chunks: usize, chunk_len: usize) {
     println!(
-        "{} {} Chunk {}/{} ({} tests in {}x{} grid)",
+        "{} {} Chunk {}/{} ({} tests)",
         "═".repeat(SEPARATOR_WIDTH).dimmed(),
         "→".blue().bold(),
         chunk_idx + 1,
         total_chunks,
         chunk_len,
-        GRID_SIZE,
-        GRID_SIZE
     );
     print_separator();
     println!();
@@ -86,9 +85,9 @@ struct Args {
     #[arg(short = 'i', long)]
     interactive: bool,
 
-    /// Delay in milliseconds between each action (default: 100)
-    #[arg(short = 'd', long = "action-delay", default_value = "100")]
-    action_delay: u64,
+    /// Start interactive mode and immediately begin recording a test with this name
+    #[arg(long, value_name = "NAME")]
+    record: Option<String>,
 
     /// Verbose output: show all per-action details during test execution
     #[arg(short, long)]
@@ -125,8 +124,7 @@ struct Args {
     emit_events: Option<PathBuf>,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     // Setup logging
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
@@ -186,8 +184,10 @@ async fn main() -> Result<()> {
             .context("Failed to collect test files")?
     };
 
-    // In interactive mode, we don't require tests to be found initially
-    if test_files.is_empty() && !args.interactive {
+    let interactive_mode = args.interactive || args.record.is_some();
+
+    // In interactive/recording mode, we don't require tests to be found initially
+    if test_files.is_empty() && !interactive_mode {
         let location = if !args.tags.is_empty() {
             format!("with tags: {:?}", args.tags)
         } else if let Some(ref path) = args.path {
@@ -199,7 +199,7 @@ async fn main() -> Result<()> {
         std::process::exit(1);
     }
 
-    if verbose && !args.interactive {
+    if verbose && !interactive_mode {
         println!("Found {} test file(s)\n", test_files.len());
     }
 
@@ -243,10 +243,12 @@ async fn main() -> Result<()> {
                     chunk.len()
                 );
             }
-            for (test_index, test_file) in chunk.iter().enumerate() {
+            for test_file in chunk.iter() {
                 match TestSpec::from_file(test_file, false) {
                     Ok(test) => {
-                        let offset = calculate_test_offset_default(test_index, chunk.len());
+                        let offset =
+                            calculate_test_offsets_for_batch_default(std::slice::from_ref(&test))
+                                [0];
                         let max_tick = test.max_tick();
                         let assertions = test
                             .timeline
@@ -295,11 +297,10 @@ async fn main() -> Result<()> {
     // Connect to server
     let mut executor = executor::TestExecutor::new();
 
-    // Set action delay
-    executor.set_action_delay(args.action_delay);
     executor.set_verbose(args.verbose);
     executor.set_quiet(args.quiet || !matches!(args.format, OutputFormat::Pretty));
     executor.set_fail_fast(args.fail_fast);
+    executor.set_enable_breakpoints(interactive_mode);
     if let Some(events_path) = args.emit_events.clone() {
         if test_files.len() != 1 {
             eprintln!(
@@ -312,16 +313,8 @@ async fn main() -> Result<()> {
         executor.set_events_path(events_path);
     }
 
-    if verbose && args.action_delay != 100 {
-        println!(
-            "{} Action delay set to {} ms",
-            "→".yellow(),
-            args.action_delay
-        );
-    }
-
     // Interactive mode: enter command loop
-    if args.interactive {
+    if interactive_mode {
         println!(
             "{} Interactive mode enabled - listening for chat commands",
             "→".yellow().bold()
@@ -330,19 +323,31 @@ async fn main() -> Result<()> {
         println!("  During tests: type 's' to step, 'c' to continue\n");
 
         println!("{} Connecting to {}...", "→".blue(), server);
-        executor.connect(server).await?;
+        executor.connect(server)?;
         println!("{} Connected successfully\n", "✓".green());
 
-        executor.interactive_mode(&mut test_loader).await?;
+        if let Some(record_name) = args.record.as_deref() {
+            executor.start_recording(record_name, &test_loader, None)?;
+        }
+
+        executor.interactive_mode(&mut test_loader)?;
         return Ok(());
     }
 
     if verbose {
         println!("{} Connecting to {}...", "→".blue(), server);
     }
-    executor.connect(server).await?;
+    executor.connect(server)?;
+    let effective_chunk_distance = executor.bot.effective_chunk_distance()?;
+    let (view_distance, simulation_distance) = executor.bot.detected_distances();
     if verbose {
-        println!("{} Connected successfully\n", "✓".green());
+        println!(
+            "{} Connected successfully (view: {}, simulation: {}, effective: {})\n",
+            "✓".green(),
+            view_distance,
+            simulation_distance,
+            effective_chunk_distance
+        );
     }
 
     // Load all tests and run in chunks
@@ -359,8 +364,8 @@ async fn main() -> Result<()> {
             CHUNK_SIZE
         );
         println!(
-            "  Each chunk uses a {}x{} grid around spawn\n",
-            GRID_SIZE, GRID_SIZE
+            "  Each chunk is laid out from cleanup regions with {} block padding\n",
+            8
         );
     } else {
         eprintln!("Running {} tests...", format_number(total_tests));
@@ -369,6 +374,7 @@ async fn main() -> Result<()> {
     let start_time = Instant::now();
     let mut all_results = Vec::new();
     let mut all_failures: Vec<(String, AssertFailure)> = Vec::new();
+    let mut test_specs_map = std::collections::HashMap::new();
 
     for (chunk_idx, chunk) in chunks.iter().enumerate() {
         if verbose {
@@ -376,22 +382,12 @@ async fn main() -> Result<()> {
         }
 
         let mut tests_with_offsets = Vec::new();
-        for (test_index, test_file) in chunk.iter().enumerate() {
+        let mut chunk_specs = Vec::new();
+        for test_file in chunk.iter() {
             match TestSpec::from_file(test_file, false) {
                 Ok(test) => {
-                    // Calculate offset within this chunk (10x10 grid)
-                    let offset = calculate_test_offset_default(test_index, chunk.len());
-                    if verbose {
-                        println!(
-                            "  {} Grid position: {} (offset: [{}, {}, {}])",
-                            "→".blue(),
-                            format!("[{}/{}]", test_index + 1, chunk.len()).dimmed(),
-                            offset[0],
-                            offset[1],
-                            offset[2]
-                        );
-                    }
-                    tests_with_offsets.push((test, offset));
+                    test_specs_map.insert(test.name.clone(), (test.clone(), test_file.clone()));
+                    chunk_specs.push(test);
                 }
                 Err(e) => {
                     eprintln!(
@@ -405,17 +401,65 @@ async fn main() -> Result<()> {
             }
         }
 
-        if verbose {
-            println!();
+        let sim_batches = split_tests_by_simulation_distance(chunk_specs, effective_chunk_distance);
+
+        if verbose && sim_batches.len() > 1 {
+            println!(
+                "  {} Split into {} parallel batch(es) for simulation-distance={}\n",
+                "→".blue(),
+                sim_batches.len(),
+                effective_chunk_distance
+            );
         }
 
-        // Run this chunk of tests in parallel using merged timeline
-        let output = executor
-            .run_tests_parallel(&tests_with_offsets, args.break_after_setup)
-            .await?;
+        for (sim_batch_idx, sim_batch) in sim_batches.iter().enumerate() {
+            if verbose && sim_batches.len() > 1 {
+                println!(
+                    "  {} Simulation batch {}/{} ({} tests)",
+                    "→".blue(),
+                    sim_batch_idx + 1,
+                    sim_batches.len(),
+                    sim_batch.len()
+                );
+            }
 
-        all_results.extend(output.results);
-        all_failures.extend(output.failures);
+            executor.bot.reset_to_test_origin()?;
+            let offsets = calculate_test_offsets_for_batch_default(sim_batch);
+            let bot_position = executor.bot.get_position()?;
+            tests_with_offsets.clear();
+            for (test_index, (test, offset)) in sim_batch.iter().cloned().zip(offsets).enumerate() {
+                let offset = [
+                    offset[0] + bot_position[0],
+                    offset[1],
+                    offset[2] + bot_position[2],
+                ];
+                if verbose {
+                    println!(
+                        "  {} Test {} (offset: [{}, {}, {}])",
+                        "→".blue(),
+                        format!("[{}/{}]", test_index + 1, sim_batch.len()).dimmed(),
+                        offset[0],
+                        offset[1],
+                        offset[2]
+                    );
+                }
+                tests_with_offsets.push((test, offset));
+            }
+
+            if verbose {
+                println!();
+            }
+
+            let output =
+                executor.run_tests_parallel(&tests_with_offsets, args.break_after_setup)?;
+
+            all_results.extend(output.results);
+            all_failures.extend(output.failures);
+
+            if args.fail_fast && !all_failures.is_empty() {
+                break;
+            }
+        }
 
         if args.fail_fast && !all_failures.is_empty() {
             break;
@@ -448,6 +492,28 @@ async fn main() -> Result<()> {
     }
 
     if all_results.iter().any(|r| !r.success) {
+        if matches!(args.format, OutputFormat::Pretty) && !all_failures.is_empty() {
+            println!("{}", "═".repeat(SEPARATOR_WIDTH).dimmed());
+            println!("{}", "Flint Visualizer Links:".cyan().bold());
+            for (test_name, failure) in &all_failures {
+                if let Some((spec, path)) = test_specs_map.get(test_name) {
+                    let payload = flint_core::viz_link::FailurePayload::new(
+                        spec.clone(),
+                        Some(path.clone()),
+                        vec![failure.clone()],
+                        failure.tick,
+                    );
+                    let base_url = std::env::var("FLINT_VIZ_URL")
+                        .unwrap_or_else(|_| "https://flinttestmc.github.io/FlintViz/#".to_string());
+                    if let Ok(url) = flint_core::viz_link::failure_url(&payload, &base_url) {
+                        println!("  [Visualizer Link for {}]:", test_name.bold());
+                        println!("  {}", url.underline().blue());
+                    }
+                }
+            }
+            println!("{}", "═".repeat(SEPARATOR_WIDTH).dimmed());
+            println!();
+        }
         std::process::exit(1);
     }
 

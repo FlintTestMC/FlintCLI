@@ -1,71 +1,29 @@
 //! Test action execution - block placement, assertions, etc.
 
-use crate::bot::TestBot;
+use crate::executor::adapter::{MinecraftPlayer, MinecraftWorld};
+use crate::executor::block;
 use anyhow::Result;
 use colored::Colorize;
-use flint_core::results::{ActionOutcome, AssertFailure, AssertPosition, InfoType};
-use flint_core::test_spec::AssertType::Block;
-use flint_core::test_spec::{ActionType, BlockSpec, TimelineEntry};
-
-use super::block::{block_matches, extract_block_id};
-
-// Constants for action timing
-pub const BLOCK_POLL_ATTEMPTS: u32 = 10;
-pub const BLOCK_POLL_DELAY_MS: u64 = 50;
-pub const PLACE_EACH_DELAY_MS: u64 = 10;
-
-/// Apply offset to a position
-pub fn apply_offset(pos: [i32; 3], offset: [i32; 3]) -> [i32; 3] {
-    [pos[0] + offset[0], pos[1] + offset[1], pos[2] + offset[2]]
-}
-
-/// Poll for a block at the given position with retries
-/// This handles timing issues in CI environments where block updates may take longer
-pub async fn poll_block_with_retry(
-    bot: &TestBot,
-    world_pos: [i32; 3],
-    expected_block: &str,
-) -> Result<Option<String>> {
-    for attempt in 0..BLOCK_POLL_ATTEMPTS {
-        let block = bot.get_block(world_pos).await?;
-
-        // Check if the block matches what we expect
-        if let Some(ref actual) = block
-            && block_matches(actual, expected_block)
-        {
-            return Ok(block);
-        }
-
-        // If not the last attempt, wait before retrying
-        if attempt < BLOCK_POLL_ATTEMPTS - 1 {
-            tokio::time::sleep(tokio::time::Duration::from_millis(BLOCK_POLL_DELAY_MS)).await;
-        }
-    }
-
-    // Return whatever we have after all retries
-    bot.get_block(world_pos).await
-}
+use flint_core::results::{
+    ActionOutcome, AssertEntityFail, AssertFailure, AssertPosition, InfoType,
+};
+use flint_core::test_spec::AssertType;
+use flint_core::test_spec::{ActionType, Item, PlayerSlot, TimelineEntry};
+use flint_core::traits::{FlintPlayer, FlintWorld};
 
 /// Execute a single test action
 /// Returns the outcome: Action (non-assertion), AssertPassed, or AssertFailed with details
-pub async fn execute_action(
-    bot: &mut TestBot,
+pub fn execute_action(
+    world: &mut MinecraftWorld,
+    player: &mut Option<Box<dyn FlintPlayer>>,
     tick: u32,
     entry: &TimelineEntry,
     _value_idx: usize,
-    offset: [i32; 3],
-    action_delay_ms: u64,
     verbose: bool,
 ) -> Result<ActionOutcome> {
     match &entry.action_type {
         ActionType::Place { pos, block } => {
-            let world_pos = apply_offset(*pos, offset);
-            let block_spec = block.to_command();
-            let cmd = format!(
-                "setblock {} {} {} {}",
-                world_pos[0], world_pos[1], world_pos[2], block_spec
-            );
-            bot.send_command(&cmd).await?;
+            world.set_block_checked(*pos, block)?;
             if verbose {
                 println!(
                     "    {} Tick {}: place at [{}, {}, {}] = {}",
@@ -74,22 +32,15 @@ pub async fn execute_action(
                     pos[0],
                     pos[1],
                     pos[2],
-                    block_spec.dimmed()
+                    block.to_command().dimmed()
                 );
             }
-            tokio::time::sleep(tokio::time::Duration::from_millis(action_delay_ms)).await;
             Ok(ActionOutcome::Action)
         }
 
         ActionType::PlaceEach { blocks } => {
             for placement in blocks {
-                let world_pos = apply_offset(placement.pos, offset);
-                let block_spec = placement.block.to_command();
-                let cmd = format!(
-                    "setblock {} {} {} {}",
-                    world_pos[0], world_pos[1], world_pos[2], block_spec
-                );
-                bot.send_command(&cmd).await?;
+                world.set_block_checked(placement.pos, &placement.block)?;
                 if verbose {
                     println!(
                         "    {} Tick {}: place at [{}, {}, {}] = {}",
@@ -98,17 +49,24 @@ pub async fn execute_action(
                         placement.pos[0],
                         placement.pos[1],
                         placement.pos[2],
-                        block_spec.dimmed()
+                        placement.block.to_command().dimmed()
                     );
                 }
-                tokio::time::sleep(tokio::time::Duration::from_millis(PLACE_EACH_DELAY_MS)).await;
             }
             Ok(ActionOutcome::Action)
         }
 
         ActionType::Fill { region, with } => {
-            let world_min = apply_offset(region[0], offset);
-            let world_max = apply_offset(region[1], offset);
+            let world_min = [
+                region[0][0] + world.offset[0],
+                region[0][1] + world.offset[1],
+                region[0][2] + world.offset[2],
+            ];
+            let world_max = [
+                region[1][0] + world.offset[0],
+                region[1][1] + world.offset[1],
+                region[1][2] + world.offset[2],
+            ];
             let block_spec = with.to_command();
             let cmd = format!(
                 "fill {} {} {} {} {} {} {}",
@@ -120,7 +78,8 @@ pub async fn execute_action(
                 world_max[2],
                 block_spec
             );
-            bot.send_command(&cmd).await?;
+            world.bot.send_command_synced(&cmd)?;
+
             if verbose {
                 println!(
                     "    {} Tick {}: fill [{},{},{}] to [{},{},{}] = {}",
@@ -135,17 +94,15 @@ pub async fn execute_action(
                     block_spec.dimmed()
                 );
             }
-            tokio::time::sleep(tokio::time::Duration::from_millis(action_delay_ms)).await;
             Ok(ActionOutcome::Action)
         }
 
         ActionType::Remove { pos } => {
-            let world_pos = apply_offset(*pos, offset);
-            let cmd = format!(
-                "setblock {} {} {} air",
-                world_pos[0], world_pos[1], world_pos[2]
-            );
-            bot.send_command(&cmd).await?;
+            let air = flint_core::test_spec::Block {
+                id: "minecraft:air".to_string(),
+                properties: Default::default(),
+            };
+            world.set_block_checked(*pos, &air)?;
             if verbose {
                 println!(
                     "    {} Tick {}: remove at [{}, {}, {}]",
@@ -156,103 +113,85 @@ pub async fn execute_action(
                     pos[2]
                 );
             }
-            tokio::time::sleep(tokio::time::Duration::from_millis(action_delay_ms)).await;
+            Ok(ActionOutcome::Action)
+        }
+
+        ActionType::Summon {
+            entity_alias,
+            entity_type,
+            pos,
+            nbt,
+        } => {
+            if verbose {
+                println!(
+                    "    {} Tick {}: summon {} as {} at [{}, {}, {}]",
+                    "→".blue(),
+                    tick,
+                    entity_type,
+                    entity_alias,
+                    pos[0],
+                    pos[1],
+                    pos[2]
+                );
+            }
+            world.summon_entity(entity_alias, entity_type, *pos, nbt.as_ref());
             Ok(ActionOutcome::Action)
         }
 
         ActionType::Assert { checks } => {
             for check in checks {
-                let Block(check) = check else {
-                    anyhow::bail!("TODO: AssertType::Inventory not yet implemented");
-                };
-                let BlockSpec::Single(expected_block) = &check.is else {
-                    anyhow::bail!("TODO: BlockSpec::Multiple not yet implemented");
-                };
-                let world_pos = apply_offset(check.pos, offset);
+                match check {
+                    AssertType::Block(check) => {
+                        let expected_blocks = check.is.to_vec();
+                        let actual = world.get_block(check.pos);
 
-                // Poll with retries to handle timing issues in CI environments
-                let actual_block =
-                    poll_block_with_retry(bot, world_pos, &expected_block.id).await?;
+                        // Helper function to check ID match (allowing for optional minecraft: prefix difference)
+                        let check_id = |actual: &str, expected: &str| -> bool {
+                            let actual_clean = actual.strip_prefix("minecraft:").unwrap_or(actual);
+                            let expected_clean =
+                                expected.strip_prefix("minecraft:").unwrap_or(expected);
+                            actual_clean.to_lowercase() == expected_clean.to_lowercase()
+                        };
 
-                // Check block type
-                let matches = actual_block
-                    .as_ref()
-                    .is_some_and(|actual| block_matches(actual, &expected_block.id));
+                        let mut matched_any = false;
+                        for expected_block in &expected_blocks {
+                            // Check block type
+                            let matches_id = check_id(&actual.id, &expected_block.id);
+                            let matches_props =
+                                matches_id && block::properties_match(&actual, expected_block);
 
-                if !matches {
-                    let actual_name = actual_block
-                        .as_ref()
-                        .map(|s| extract_block_id(s))
-                        .unwrap_or_else(|| "none".to_string());
+                            if matches_id && matches_props {
+                                matched_any = true;
+                                break;
+                            }
+                        }
 
-                    if verbose {
-                        println!(
-                            "    {} Tick {}: assert block at [{}, {}, {}] expected {}, got {}",
-                            "✗".red().bold(),
-                            tick,
-                            check.pos[0],
-                            check.pos[1],
-                            check.pos[2],
-                            expected_block.id.green(),
-                            actual_name.red()
-                        );
-                    }
-
-                    return Ok(ActionOutcome::AssertFailed(AssertFailure {
-                        tick,
-                        expected: InfoType::String(expected_block.id.clone()),
-                        actual: InfoType::String(actual_name),
-                        position: AssertPosition::from_array(check.pos),
-                        error_message: "Block was different".to_string(),
-                        execution_time_ms: None,
-                    }));
-                }
-
-                // Check state properties if any are specified
-                if !expected_block.properties.is_empty() {
-                    let actual_str = actual_block.as_ref().unwrap();
-
-                    for (prop_name, expected_value) in &expected_block.properties {
-                        // Check if the property value is in the block state string
-                        let actual_lower = actual_str.to_lowercase();
-                        let prop_pattern =
-                            format!("{}: {}", prop_name, expected_value).to_lowercase();
-                        let prop_pattern_quoted =
-                            format!("{}: \"{}\"", prop_name, expected_value).to_lowercase();
-                        // Handle numeric values with underscore prefix (e.g., level: _0)
-                        let prop_pattern_underscore =
-                            format!("{}: _{}", prop_name, expected_value).to_lowercase();
-
-                        let prop_matches = actual_lower.contains(&prop_pattern)
-                            || actual_lower.contains(&prop_pattern_quoted)
-                            || actual_lower.contains(&prop_pattern_underscore);
-
-                        if !prop_matches {
-                            // Try to extract the actual property value from the block state string
-                            let actual_prop = extract_property_value(actual_str, prop_name)
-                                .unwrap_or_else(|| "?".to_string());
+                        if !matched_any {
+                            let first_expected =
+                                expected_blocks.first().cloned().unwrap_or_else(|| {
+                                    flint_core::test_spec::Block {
+                                        id: "minecraft:air".to_string(),
+                                        properties: Default::default(),
+                                    }
+                                });
 
                             if verbose {
                                 println!(
-                                    "    {} Tick {}: assert block at [{}, {}, {}] state {} expected {}, got {}",
+                                    "    {} Tick {}: assert block at [{}, {}, {}] expected {}, got {}",
                                     "✗".red().bold(),
                                     tick,
                                     check.pos[0],
                                     check.pos[1],
                                     check.pos[2],
-                                    prop_name.dimmed(),
-                                    expected_value.green(),
-                                    actual_prop.red()
+                                    first_expected.id.green(),
+                                    actual.id.red()
                                 );
                             }
 
                             return Ok(ActionOutcome::AssertFailed(AssertFailure {
                                 tick,
-                                expected: InfoType::String(format!(
-                                    "{}={}",
-                                    prop_name, expected_value
-                                )),
-                                actual: InfoType::String(format!("{}={}", prop_name, actual_prop)),
+                                expected: InfoType::Blocks(expected_blocks),
+                                actual: InfoType::Block(actual),
                                 position: AssertPosition::from_array(check.pos),
                                 error_message: "Block was different".to_string(),
                                 execution_time_ms: None,
@@ -260,63 +199,188 @@ pub async fn execute_action(
                         }
 
                         if verbose {
+                            let first_expected =
+                                expected_blocks.first().cloned().unwrap_or_else(|| {
+                                    flint_core::test_spec::Block {
+                                        id: "minecraft:air".to_string(),
+                                        properties: Default::default(),
+                                    }
+                                });
                             println!(
-                                "    {} Tick {}: assert block at [{}, {}, {}] state {} = {}",
+                                "    {} Tick {}: assert block at [{}, {}, {}] is {}",
                                 "✓".green(),
                                 tick,
                                 check.pos[0],
                                 check.pos[1],
                                 check.pos[2],
-                                prop_name.dimmed(),
-                                expected_value.dimmed()
+                                first_expected.id.dimmed()
                             );
                         }
                     }
-                } else if verbose {
-                    println!(
-                        "    {} Tick {}: assert block at [{}, {}, {}] is {}",
-                        "✓".green(),
-                        tick,
-                        check.pos[0],
-                        check.pos[1],
-                        check.pos[2],
-                        expected_block.id.dimmed()
-                    );
+                    AssertType::Inventory(check) => {
+                        let actual = if let Some(p) = player {
+                            if let Some(p) = p.as_any_mut().downcast_mut::<MinecraftPlayer>() {
+                                p.restore_inventory()?;
+                            }
+                            p.get_slot(check.slot, Vec::new())
+                        } else {
+                            None
+                        };
+
+                        let match_ok = match (&check.is, &actual) {
+                            (None, None) => true,
+                            (Some(expected), Some(act)) => {
+                                let actual_clean =
+                                    act.id.strip_prefix("minecraft:").unwrap_or(&act.id);
+                                let expected_clean = expected
+                                    .id
+                                    .strip_prefix("minecraft:")
+                                    .unwrap_or(&expected.id);
+                                let id_matches =
+                                    actual_clean.to_lowercase() == expected_clean.to_lowercase();
+                                let count_matches = act.count == expected.count;
+                                id_matches && count_matches
+                            }
+                            _ => false,
+                        };
+
+                        if !match_ok {
+                            if verbose {
+                                println!(
+                                    "    {} Tick {}: assert inventory slot {:?} expected {:?}, got {:?}",
+                                    "✗".red().bold(),
+                                    tick,
+                                    check.slot,
+                                    check.is,
+                                    actual
+                                );
+                            }
+                            return Ok(ActionOutcome::AssertFailed(AssertFailure {
+                                tick,
+                                expected: check
+                                    .is
+                                    .clone()
+                                    .map(InfoType::Item)
+                                    .unwrap_or_else(|| InfoType::String("empty".to_string())),
+                                actual: actual
+                                    .clone()
+                                    .map(InfoType::Item)
+                                    .unwrap_or_else(|| InfoType::String("empty".to_string())),
+                                position: AssertPosition::from_array([0, 0, 0]),
+                                error_message: "Inventory slot content was different".to_string(),
+                                execution_time_ms: None,
+                            }));
+                        }
+
+                        if verbose {
+                            println!(
+                                "    {} Tick {}: assert inventory slot {:?} matches expected",
+                                "✓".green(),
+                                tick,
+                                check.slot
+                            );
+                        }
+                    }
+                    AssertType::Entity(check) => {
+                        let requested_nbt = check
+                            .nbt
+                            .as_ref()
+                            .map(|nbt| nbt.requested_paths())
+                            .unwrap_or_default();
+                        let actual = world.get_entity(&check.entity_alias, &requested_nbt);
+                        if !flint_core::runner::entity_matches(&actual, check) {
+                            return Ok(ActionOutcome::AssertFailed(
+                                AssertEntityFail::new(tick, check, &actual).into(),
+                            ));
+                        }
+
+                        if verbose {
+                            println!(
+                                "    {} Tick {}: assert entity {} matches expected",
+                                "✓".green(),
+                                tick,
+                                check.entity_alias
+                            );
+                        }
+                    }
                 }
             }
             Ok(ActionOutcome::AssertPassed)
         }
 
-        ActionType::UseItemOn { .. }
-        | ActionType::SetSlot { .. }
-        | ActionType::SelectHotbar { .. } => {
-            anyhow::bail!(
-                "TODO: ActionType {:?} not yet implemented",
-                entry.action_type
-            );
+        ActionType::Tp {
+            entity_alias,
+            pos,
+            rot,
+        } => {
+            if verbose {
+                println!(
+                    "    {} Tick {}: tp entity {} to [{}, {}, {}] with {:?}",
+                    "→".blue(),
+                    tick,
+                    entity_alias,
+                    pos[0],
+                    pos[1],
+                    pos[2],
+                    rot
+                );
+            }
+            if entity_alias == "player" {
+                let p = player.get_or_insert_with(|| world.create_player());
+                let p = p
+                    .as_any_mut()
+                    .downcast_mut::<MinecraftPlayer>()
+                    .ok_or_else(|| anyhow::anyhow!("unsupported FlintPlayer implementation"))?;
+                p.teleport_checked(*pos, *rot)?;
+            } else {
+                world.teleport_entity(entity_alias, *pos, *rot);
+            }
+            Ok(ActionOutcome::Action)
+        }
+
+        ActionType::Interact { item } => {
+            if verbose {
+                println!("    {} Tick {}: interact with {:?}", "→".blue(), tick, item);
+            }
+            let p = player
+                .as_mut()
+                .expect("interact requires an existing player");
+            let p = p
+                .as_any_mut()
+                .downcast_mut::<MinecraftPlayer>()
+                .ok_or_else(|| anyhow::anyhow!("unsupported FlintPlayer implementation"))?;
+            if let Some(item_id) = item {
+                let it = Item::new(item_id);
+                p.set_slot_checked(PlayerSlot::Hotbar1, Some(&it))?;
+                p.select_hotbar_checked(1)?;
+            }
+            p.interact_checked()?;
+            Ok(ActionOutcome::Action)
+        }
+
+        ActionType::SetSlot { slot, item, count } => {
+            let p = player.get_or_insert_with(|| world.create_player());
+            let p = p
+                .as_any_mut()
+                .downcast_mut::<MinecraftPlayer>()
+                .ok_or_else(|| anyhow::anyhow!("unsupported FlintPlayer implementation"))?;
+            if let Some(item_id) = item {
+                let it = Item::with_count(item_id, *count);
+                p.set_slot_checked(*slot, Some(&it))?;
+            } else {
+                p.set_slot_checked(*slot, None)?;
+            }
+            Ok(ActionOutcome::Action)
+        }
+
+        ActionType::SelectHotbar { slot } => {
+            let p = player.get_or_insert_with(|| world.create_player());
+            let p = p
+                .as_any_mut()
+                .downcast_mut::<MinecraftPlayer>()
+                .ok_or_else(|| anyhow::anyhow!("unsupported FlintPlayer implementation"))?;
+            p.select_hotbar_checked(*slot)?;
+            Ok(ActionOutcome::Action)
         }
     }
-}
-
-/// Extract a property value from an Azalea block state debug string
-/// Input: "BlockState(id: 6795, OakFence { east: false, north: true })", "east"
-/// Output: Some("false")
-fn extract_property_value(block_state_str: &str, prop_name: &str) -> Option<String> {
-    let lower = block_state_str.to_lowercase();
-    let prop_lower = prop_name.to_lowercase();
-
-    // Look for "prop_name: value" pattern
-    let pattern = format!("{}: ", prop_lower);
-    if let Some(start) = lower.find(&pattern) {
-        let value_start = start + pattern.len();
-        let rest = &block_state_str[value_start..];
-        // Value ends at comma, space before }, or }
-        let end = rest.find([',', '}']).unwrap_or(rest.len());
-        let value = rest[..end].trim().trim_matches('_');
-        if !value.is_empty() {
-            return Some(value.to_string());
-        }
-    }
-
-    None
 }
