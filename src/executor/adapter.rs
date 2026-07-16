@@ -121,6 +121,16 @@ impl FlintWorld for MinecraftWorld {
         self.current_tick
     }
 
+    fn get_time(&self) -> u64 {
+        match query_daytime(&self.bot) {
+            Ok(time) => time,
+            Err(error) => {
+                tracing::error!("Failed to query world time: {}", error);
+                0
+            }
+        }
+    }
+
     fn get_block(&self, pos: BlockPos) -> Block {
         let world_pos = self.world_pos(pos);
         for _ in 0..10 {
@@ -279,6 +289,45 @@ fn query_entity_numbers(bot: &TestBot, selector: &str, path: &str) -> Result<Vec
         anyhow::bail!("entity query returned no numbers: {message}");
     }
     Ok(values)
+}
+
+pub(crate) fn query_daytime(bot: &TestBot) -> Result<u64> {
+    query_time_command(bot, "time query minecraft:day", "daytime").map(|time| time % 24_000)
+}
+
+pub(crate) fn query_gametime(bot: &TestBot) -> Result<u64> {
+    query_time_command(bot, "time query gametime", "game time")
+}
+
+fn query_time_command(bot: &TestBot, command: &str, label: &str) -> Result<u64> {
+    while bot
+        .recv_chat_timeout(std::time::Duration::from_millis(
+            tick::CHAT_DRAIN_TIMEOUT_MS,
+        ))
+        .is_some()
+    {}
+
+    bot.send_command(command)?;
+    let timeout = std::time::Duration::from_secs(3);
+    let started = std::time::Instant::now();
+    while started.elapsed() < timeout {
+        if let Some((sender, message)) =
+            bot.recv_chat_timeout(std::time::Duration::from_millis(tick::CHAT_POLL_TIMEOUT_MS))
+        {
+            if sender.is_some() || !message.to_ascii_lowercase().contains("time") {
+                continue;
+            }
+            if let Some(time) = message
+                .split(|character: char| !character.is_ascii_digit())
+                .rfind(|part| !part.is_empty())
+                .and_then(|part| part.parse::<u64>().ok())
+            {
+                return Ok(time);
+            }
+            anyhow::bail!("time query returned no numeric {label}: {message}");
+        }
+    }
+    anyhow::bail!("timed out querying world {label}")
 }
 
 fn query_entity_data(bot: &TestBot, selector: &str, path: &str) -> Result<String> {

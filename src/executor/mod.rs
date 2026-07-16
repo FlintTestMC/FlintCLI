@@ -370,6 +370,16 @@ impl TestExecutor {
     ) -> Result<TestRunOutput> {
         let verbose = self.verbose;
 
+        let Some((first, _)) = tests_with_offsets.first() else {
+            anyhow::bail!("cannot run an empty test batch");
+        };
+        if tests_with_offsets
+            .iter()
+            .any(|(test, _)| test.world_config() != first.world_config())
+        {
+            anyhow::bail!("parallel tests must use the same world configuration");
+        }
+
         if verbose {
             println!(
                 "{} Running {} tests in parallel\n",
@@ -433,6 +443,30 @@ impl TestExecutor {
             println!();
         }
 
+        // Freeze first so enabling time advancement cannot move the clock during setup.
+        self.bot.send_command_synced("tick freeze")?;
+
+        // Daylight detectors refresh from the server-global game-time phase. Align that
+        // phase so their 20-tick updates occur at deterministic test ticks.
+        let game_time = adapter::query_gametime(&self.bot)?;
+        let alignment_ticks = (20 - game_time % 20) % 20;
+        for _ in 0..alignment_ticks {
+            tick::step_tick(&mut self.bot, false)?;
+        }
+
+        // Apply settings shared by every test in this parallel batch.
+        let world_config = first.world_config();
+        let mut gamerules: Vec<_> = world_config.gamerules.iter().collect();
+        gamerules.sort_by_key(|(name, _)| *name);
+        for (name, value) in gamerules {
+            self.bot
+                .send_command_synced(&format!("gamerule {name} {value}"))?;
+        }
+        self.bot
+            .send_command_synced(&format!("time set {}", world_config.time))?;
+        self.bot
+            .send_command_synced(&format!("weather {}", world_config.weather))?;
+
         // Clean all test areas before starting
         if verbose {
             println!("{} Cleaning all test areas...", "→".blue());
@@ -449,9 +483,6 @@ impl TestExecutor {
         }
 
         self.forceload_regions(tests_with_offsets, true)?;
-
-        // Freeze time globally
-        self.bot.send_command_synced("tick freeze")?;
 
         // Break after setup if requested
         let mut stepping_mode = false;
@@ -570,14 +601,15 @@ impl TestExecutor {
                                     "✗".red().bold(),
                                     test.name,
                                     current_tick,
-                                    String::from(&detail.expected).green(),
-                                    String::from(&detail.actual).red()
+                                    String::from(detail.expected()).green(),
+                                    String::from(detail.actual()).red()
                                 );
                             }
                             if let Some(events) = self.events.as_mut() {
-                                let expected: String = (&detail.expected).into();
-                                let actual: String = (&detail.actual).into();
-                                let AssertPosition::Coordinate { x, y, z } = detail.position else {
+                                let expected: String = detail.expected().into();
+                                let actual: String = detail.actual().into();
+                                let AssertPosition::Coordinate { x, y, z } = detail.position()
+                                else {
                                     anyhow::bail!(
                                         "TODO: emit events for AssertPosition::Slot not yet implemented"
                                     );

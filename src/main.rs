@@ -12,7 +12,7 @@ use flint_core::loader::TestLoader;
 use flint_core::results::AssertFailure;
 use flint_core::spatial::calculate_test_offsets_for_batch_default;
 use flint_core::test_spec::{ActionType, TestSpec};
-use spatial_batch::split_tests_by_simulation_distance;
+use spatial_batch::{group_tests_by_world_config, split_tests_by_simulation_distance};
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -401,7 +401,11 @@ fn main() -> Result<()> {
             }
         }
 
-        let sim_batches = split_tests_by_simulation_distance(chunk_specs, effective_chunk_distance);
+        let config_batches = group_tests_by_world_config(chunk_specs);
+        let sim_batches: Vec<_> = config_batches
+            .into_iter()
+            .flat_map(|tests| split_tests_by_simulation_distance(tests, effective_chunk_distance))
+            .collect();
 
         if verbose && sim_batches.len() > 1 {
             println!(
@@ -501,7 +505,7 @@ fn main() -> Result<()> {
                         spec.clone(),
                         Some(path.clone()),
                         vec![failure.clone()],
-                        failure.tick,
+                        failure.tick(),
                     );
                     let base_url = std::env::var("FLINT_VIZ_URL")
                         .unwrap_or_else(|_| "https://flinttestmc.github.io/FlintViz/#".to_string());

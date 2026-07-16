@@ -3,6 +3,23 @@
 use flint_core::spatial::calculate_test_offsets_for_batch_default;
 use flint_core::test_spec::TestSpec;
 
+/// Partition tests by their resolved world configuration while preserving the order in
+/// which each configuration and test first appeared.
+pub fn group_tests_by_world_config(tests: Vec<TestSpec>) -> Vec<Vec<TestSpec>> {
+    let mut groups: Vec<Vec<TestSpec>> = Vec::new();
+    for test in tests {
+        if let Some(group) = groups
+            .iter_mut()
+            .find(|group| group[0].world_config() == test.world_config())
+        {
+            group.push(test);
+        } else {
+            groups.push(vec![test]);
+        }
+    }
+    groups
+}
+
 /// Blocks from world origin (0, 0) that can still be simulated when the bot stands at
 /// the layout center. Reserves two chunks of margin for the player and chunk edges.
 pub fn simulation_radius_blocks(simulation_distance: u32) -> i32 {
@@ -73,6 +90,7 @@ mod tests {
             setup: Some(SetupSpec {
                 cleanup: Some(CleanupSpec { region }),
                 player: None,
+                world: Default::default(),
             }),
             timeline: vec![],
             breakpoints: vec![],
@@ -104,6 +122,26 @@ mod tests {
         let batches = split_tests_by_simulation_distance(tests, 6);
         assert!(batches.len() > 1);
         assert_eq!(batches.iter().map(|b| b.len()).sum::<usize>(), 20);
+    }
+
+    #[test]
+    fn groups_matching_world_configs_together() {
+        let day_a = test_spec("day-a", [[0, 0, 0], [1, 1, 1]]);
+        let mut night = test_spec("night", [[0, 0, 0], [1, 1, 1]]);
+        night.setup.as_mut().unwrap().world.time = "minecraft:night".to_string();
+        let day_b = test_spec("day-b", [[0, 0, 0], [1, 1, 1]]);
+
+        let groups = group_tests_by_world_config(vec![day_a, night, day_b]);
+
+        assert_eq!(groups.len(), 2);
+        assert_eq!(
+            groups[0]
+                .iter()
+                .map(|test| test.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["day-a", "day-b"]
+        );
+        assert_eq!(groups[1][0].name, "night");
     }
 
     #[test]

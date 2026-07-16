@@ -6,6 +6,7 @@ use flint_core::spatial::pair_tests_with_offsets;
 use flint_core::test_spec::TestSpec;
 
 use super::{DEFAULT_TESTS_DIR, TestExecutor, block, recorder, tick};
+use crate::spatial_batch::group_tests_by_world_config;
 
 /// Parse command parts from a chat message
 /// Returns (command, args) if a valid command was found
@@ -180,11 +181,14 @@ impl TestExecutor {
                 specs.push(test);
             }
         }
-        let tests_with_offsets = pair_tests_with_offsets(specs);
-        let output = self.run_tests_parallel(&tests_with_offsets, false)?;
-
-        let passed = output.results.iter().filter(|r| r.success).count();
-        let failed = output.results.len() - passed;
+        let mut passed = 0;
+        let mut failed = 0;
+        for group in group_tests_by_world_config(specs) {
+            let tests_with_offsets = pair_tests_with_offsets(group);
+            let output = self.run_tests_parallel(&tests_with_offsets, false)?;
+            passed += output.results.iter().filter(|r| r.success).count();
+            failed += output.results.iter().filter(|r| !r.success).count();
+        }
         self.bot.send_command(&format!(
             "say Results: {} passed, {} failed",
             passed, failed
@@ -217,11 +221,14 @@ impl TestExecutor {
                 specs.push(test);
             }
         }
-        let tests_with_offsets = pair_tests_with_offsets(specs);
-        let output = self.run_tests_parallel(&tests_with_offsets, false)?;
-
-        let passed = output.results.iter().filter(|r| r.success).count();
-        let failed = output.results.len() - passed;
+        let mut passed = 0;
+        let mut failed = 0;
+        for group in group_tests_by_world_config(specs) {
+            let tests_with_offsets = pair_tests_with_offsets(group);
+            let output = self.run_tests_parallel(&tests_with_offsets, false)?;
+            passed += output.results.iter().filter(|r| r.success).count();
+            failed += output.results.iter().filter(|r| !r.success).count();
+        }
         self.bot.send_command(&format!(
             "say Results: {} passed, {} failed",
             passed, failed

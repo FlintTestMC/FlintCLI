@@ -4,9 +4,7 @@ use crate::executor::adapter::{MinecraftPlayer, MinecraftWorld};
 use crate::executor::block;
 use anyhow::Result;
 use colored::Colorize;
-use flint_core::results::{
-    ActionOutcome, AssertEntityFail, AssertFailure, AssertPosition, InfoType,
-};
+use flint_core::results::{ActionOutcome, AssertEntityFail, AssertFailure, AssertTimeFail};
 use flint_core::test_spec::AssertType;
 use flint_core::test_spec::{ActionType, Item, PlayerSlot, TimelineEntry};
 use flint_core::traits::{FlintPlayer, FlintWorld};
@@ -188,14 +186,12 @@ pub fn execute_action(
                                 );
                             }
 
-                            return Ok(ActionOutcome::AssertFailed(AssertFailure {
+                            return Ok(ActionOutcome::AssertFailed(AssertFailure::new_block(
                                 tick,
-                                expected: InfoType::Blocks(expected_blocks),
-                                actual: InfoType::Block(actual),
-                                position: AssertPosition::from_array(check.pos),
-                                error_message: "Block was different".to_string(),
-                                execution_time_ms: None,
-                            }));
+                                expected_blocks,
+                                actual,
+                                check.pos,
+                            )));
                         }
 
                         if verbose {
@@ -255,21 +251,12 @@ pub fn execute_action(
                                     actual
                                 );
                             }
-                            return Ok(ActionOutcome::AssertFailed(AssertFailure {
+                            return Ok(ActionOutcome::AssertFailed(AssertFailure::new_inventory(
                                 tick,
-                                expected: check
-                                    .is
-                                    .clone()
-                                    .map(InfoType::Item)
-                                    .unwrap_or_else(|| InfoType::String("empty".to_string())),
-                                actual: actual
-                                    .clone()
-                                    .map(InfoType::Item)
-                                    .unwrap_or_else(|| InfoType::String("empty".to_string())),
-                                position: AssertPosition::from_array([0, 0, 0]),
-                                error_message: "Inventory slot content was different".to_string(),
-                                execution_time_ms: None,
-                            }));
+                                check.is.clone(),
+                                actual,
+                                check.slot,
+                            )));
                         }
 
                         if verbose {
@@ -278,6 +265,22 @@ pub fn execute_action(
                                 "✓".green(),
                                 tick,
                                 check.slot
+                            );
+                        }
+                    }
+                    AssertType::Time(check) => {
+                        let actual = crate::executor::adapter::query_daytime(&world.bot)?;
+                        if actual != check.time {
+                            return Ok(ActionOutcome::AssertFailed(
+                                AssertTimeFail::new(tick, check.time, actual).into(),
+                            ));
+                        }
+                        if verbose {
+                            println!(
+                                "    {} Tick {}: assert world daytime is {}",
+                                "✓".green(),
+                                tick,
+                                actual
                             );
                         }
                     }

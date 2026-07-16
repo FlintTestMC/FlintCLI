@@ -301,6 +301,15 @@ Tests are JSON files:
   "setup": {
     "cleanup": {
       "region": [[0, 60, 0], [10, 70, 10]]
+    },
+    "world": {
+      "time": "minecraft:day",
+      "weather": "clear",
+      "gamerules": {
+        "minecraft:spawn_mobs": false,
+        "minecraft:advance_time": false,
+        "minecraft:advance_weather": false
+      }
     }
   },
   "breakpoints": [1, 3],
@@ -324,7 +333,11 @@ Tests are JSON files:
 
 `setup.cleanup.region` defines the area cleared before and after the test. Optional but recommended to avoid test interference.
 
+`setup.world` controls global server state for a test. When omitted, FlintCLI uses the values shown above. Boolean, integer, and string gamerule values are supported. Tests with the same resolved world configuration run together in parallel; tests with different configurations run in separate sequential batches.
+
 `breakpoints` lists ticks where execution pauses for inspection. Optional.
+
+World daytime can be queried in an assertion with `{ "time": 1000 }`. The value is the current position in the `minecraft:day` timeline, modulo 24,000.
 
 ### Actions
 
