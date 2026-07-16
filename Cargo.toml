@@ -15,6 +15,6 @@ colored = "3.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 parking_lot = "0.12"
-flint-core = { git = "https://github.com/FlintTestMC/flint-core", rev = "5c6be6dfc18c7c07cf1904f1ff73822d357e5fdc" }
+flint-core = { path = "../flint-core" }
 clap_complete = "4.5.65"
 rustc-hash = "2.1"

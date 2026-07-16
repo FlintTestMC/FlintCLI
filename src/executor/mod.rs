@@ -17,10 +17,32 @@ use flint_core::results::{ActionOutcome, AssertFailure, AssertPosition, TestResu
 use flint_core::test_spec::{ActionType, AssertType, TestSpec, TimelineEntry};
 use flint_core::timeline::TimelineAggregate;
 use flint_core::traits::{FlintPlayer, FlintWorld};
+use std::collections::BTreeSet;
 use std::io::Write;
 
 // Timing constants
 const DEFAULT_TESTS_DIR: &str = "FlintBenchmark/tests";
+
+fn asserted_entity_types(test: &TestSpec) -> BTreeSet<String> {
+    test.timeline
+        .iter()
+        .filter_map(|entry| match &entry.action_type {
+            ActionType::Assert { checks } => Some(checks),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|check| match check {
+            AssertType::Entity(check) => check.entity_type.clone(),
+            _ => None,
+        })
+        .filter(|entity_type| {
+            !entity_type.is_empty()
+                && entity_type.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | ':' | '.')
+                })
+        })
+        .collect()
+}
 
 // Progress bar constants
 const PROGRESS_BAR_WIDTH: usize = 40;
@@ -475,6 +497,18 @@ impl TestExecutor {
             let region = test.cleanup_region();
             let world_min = self.apply_offset(region[0], *offset);
             let world_max = self.apply_offset(region[1], *offset);
+            for entity_type in asserted_entity_types(test) {
+                let cmd = format!(
+                    "kill @e[type={entity_type},x={},y={},z={},dx={},dy={},dz={}]",
+                    world_min[0],
+                    world_min[1],
+                    world_min[2],
+                    world_max[0] - world_min[0],
+                    world_max[1] - world_min[1],
+                    world_max[2] - world_min[2]
+                );
+                self.bot.send_command_synced(&cmd)?;
+            }
             let cmd = format!(
                 "fill {} {} {} {} {} {} air",
                 world_min[0], world_min[1], world_min[2], world_max[0], world_max[1], world_max[2]
@@ -532,11 +566,18 @@ impl TestExecutor {
         // Initialize per-test worlds and players using the trait model
         let mut worlds: Vec<MinecraftWorld> = tests_with_offsets
             .iter()
-            .map(|(_test, offset)| MinecraftWorld {
-                bot: self.bot.clone(),
-                offset: *offset,
-                current_tick: 0,
-                entities: std::collections::HashMap::new(),
+            .map(|(test, offset)| {
+                let region = test.cleanup_region();
+                MinecraftWorld {
+                    bot: self.bot.clone(),
+                    offset: *offset,
+                    current_tick: 0,
+                    entities: std::collections::HashMap::new(),
+                    entity_bounds: Some([
+                        self.apply_offset(region[0], *offset),
+                        self.apply_offset(region[1], *offset),
+                    ]),
+                }
             })
             .collect();
 
@@ -679,6 +720,18 @@ impl TestExecutor {
                         world_max[2]
                     );
                     self.bot.send_command_synced(&cmd)?;
+                    for entity_type in asserted_entity_types(test) {
+                        let cmd = format!(
+                            "kill @e[type={entity_type},x={},y={},z={},dx={},dy={},dz={}]",
+                            world_min[0],
+                            world_min[1],
+                            world_min[2],
+                            world_max[0] - world_min[0],
+                            world_max[1] - world_min[1],
+                            world_max[2] - world_min[2]
+                        );
+                        self.bot.send_command_synced(&cmd)?;
+                    }
                     tests_cleaned[test_idx] = true;
                     players[test_idx] = None;
                     self.bot.park_at(layout_center)?;
@@ -780,6 +833,18 @@ impl TestExecutor {
                     world_max[2]
                 );
                 self.bot.send_command_synced(&cmd)?;
+                for entity_type in asserted_entity_types(test) {
+                    let cmd = format!(
+                        "kill @e[type={entity_type},x={},y={},z={},dx={},dy={},dz={}]",
+                        world_min[0],
+                        world_min[1],
+                        world_min[2],
+                        world_max[0] - world_min[0],
+                        world_max[1] - world_min[1],
+                        world_max[2] - world_min[2]
+                    );
+                    self.bot.send_command_synced(&cmd)?;
+                }
                 tests_cleaned[test_idx] = true;
                 players[test_idx] = None;
                 self.bot.park_at(layout_center)?;

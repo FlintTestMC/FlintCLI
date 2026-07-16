@@ -29,6 +29,7 @@ impl FlintAdapter for MinecraftAdapter {
             offset: [0, 0, 0],
             current_tick: 0,
             entities: HashMap::new(),
+            entity_bounds: None,
         })
     }
 
@@ -44,6 +45,7 @@ pub struct MinecraftWorld {
     pub offset: [i32; 3],
     pub current_tick: u64,
     pub(crate) entities: HashMap<String, MinecraftEntity>,
+    pub(crate) entity_bounds: Option<[[i32; 3]; 2]>,
 }
 
 #[derive(Debug, Clone)]
@@ -229,19 +231,13 @@ impl FlintWorld for MinecraftWorld {
         }
     }
 
-    fn get_entity(&self, alias: &str, requested_nbt: &[String]) -> EntityState {
+    fn get_entity(&self, alias: &str, requested_nbt: &[String]) -> Vec<EntityState> {
         let Some(entity) = self.entities.get(alias) else {
-            return EntityState::default();
+            return Vec::new();
         };
         let selector = Self::entity_selector(entity);
         let Ok(values) = query_entity_numbers(&self.bot, &selector, "Pos") else {
-            return EntityState {
-                exists: false,
-                entity_type: Some(entity.entity_type.clone()),
-                pos: None,
-                rot: None,
-                nbt: HashMap::new(),
-            };
+            return Vec::new();
         };
         let pos = values.get(..3).map(|pos| {
             [
@@ -259,13 +255,87 @@ impl FlintWorld for MinecraftWorld {
                 nbt.insert(path.clone(), value);
             }
         }
-        EntityState {
-            exists: true,
+        vec![EntityState {
             entity_type: Some(entity.entity_type.clone()),
             pos,
             rot,
             nbt,
+        }]
+    }
+
+    fn find_entity(&self, entity_type: &str, requested_nbt: &[String]) -> Vec<EntityState> {
+        if entity_type
+            .chars()
+            .any(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == ':' || c == '.'))
+        {
+            return Vec::new();
         }
+        let all_selector = if let Some([min, max]) = self.entity_bounds {
+            format!(
+                "@e[type={entity_type},x={},y={},z={},dx={},dy={},dz={}]",
+                min[0],
+                min[1],
+                min[2],
+                max[0] - min[0],
+                max[1] - min[1],
+                max[2] - min[2]
+            )
+        } else {
+            format!("@e[type={entity_type}]")
+        };
+        let count = query_entity_count(&self.bot, &all_selector).unwrap_or(0);
+        if count == 0 {
+            return Vec::new();
+        }
+
+        const SCANNED_TAG: &str = "flintmc.assert.scanned";
+        let _ = self
+            .bot
+            .send_command_synced(&format!("tag {all_selector} remove {SCANNED_TAG}"));
+        let mut entities = Vec::with_capacity(count);
+        for _ in 0..count {
+            let selector = all_selector.replacen(
+                "@e[",
+                &format!("@e[tag=!{SCANNED_TAG},sort=nearest,limit=1,"),
+                1,
+            );
+            let Ok(values) = query_entity_numbers(&self.bot, &selector, "Pos") else {
+                break;
+            };
+            let pos = values.get(..3).map(|pos| {
+                [
+                    pos[0] - f64::from(self.offset[0]),
+                    pos[1] - f64::from(self.offset[1]),
+                    pos[2] - f64::from(self.offset[2]),
+                ]
+            });
+            let rot = query_entity_numbers(&self.bot, &selector, "Rotation")
+                .ok()
+                .and_then(|rot| rot.get(..2).map(|rot| [rot[0] as f32, rot[1] as f32]));
+            let mut nbt = HashMap::new();
+            for path in requested_nbt {
+                if let Ok(value) = query_entity_data(&self.bot, &selector, path) {
+                    nbt.insert(path.clone(), value);
+                }
+            }
+            entities.push(EntityState {
+                entity_type: Some(entity_type.to_string()),
+                pos,
+                rot,
+                nbt,
+            });
+            if self
+                .bot
+                .send_command_synced(&format!("tag {selector} add {SCANNED_TAG}"))
+                .is_err()
+            {
+                break;
+            }
+        }
+        let _ = self
+            .bot
+            .send_command_synced(&format!("tag {all_selector} remove {SCANNED_TAG}"));
+        entities
     }
 
     fn create_player(&mut self) -> Box<dyn FlintPlayer> {
@@ -291,6 +361,34 @@ fn query_entity_numbers(bot: &TestBot, selector: &str, path: &str) -> Result<Vec
     Ok(values)
 }
 
+fn query_entity_count(bot: &TestBot, selector: &str) -> Result<usize> {
+    let _query_guard = bot.lock_command_query();
+    drain_chat(bot);
+    bot.send_command(&format!("execute if entity {selector}"))?;
+    let timeout = std::time::Duration::from_secs(3);
+    let started = std::time::Instant::now();
+    while started.elapsed() < timeout {
+        if let Some((sender, message)) =
+            bot.recv_chat_timeout(std::time::Duration::from_millis(tick::CHAT_POLL_TIMEOUT_MS))
+        {
+            if sender.is_some() {
+                continue;
+            }
+            if message.contains("Test failed") || message.contains("No entity was found") {
+                return Ok(0);
+            }
+            if let Some(count) = message
+                .split(|character: char| !character.is_ascii_digit())
+                .rfind(|part| !part.is_empty())
+                .and_then(|part| part.parse::<usize>().ok())
+            {
+                return Ok(count);
+            }
+        }
+    }
+    anyhow::bail!("timed out counting entities matching {selector}")
+}
+
 pub(crate) fn query_daytime(bot: &TestBot) -> Result<u64> {
     query_time_command(bot, "time query minecraft:day", "daytime").map(|time| time % 24_000)
 }
@@ -300,12 +398,8 @@ pub(crate) fn query_gametime(bot: &TestBot) -> Result<u64> {
 }
 
 fn query_time_command(bot: &TestBot, command: &str, label: &str) -> Result<u64> {
-    while bot
-        .recv_chat_timeout(std::time::Duration::from_millis(
-            tick::CHAT_DRAIN_TIMEOUT_MS,
-        ))
-        .is_some()
-    {}
+    let _query_guard = bot.lock_command_query();
+    drain_chat(bot);
 
     bot.send_command(command)?;
     let timeout = std::time::Duration::from_secs(3);
@@ -339,12 +433,8 @@ fn query_entity_data(bot: &TestBot, selector: &str, path: &str) -> Result<String
 }
 
 fn query_entity_data_message(bot: &TestBot, selector: &str, path: &str) -> Result<String> {
-    while bot
-        .recv_chat_timeout(std::time::Duration::from_millis(
-            tick::CHAT_DRAIN_TIMEOUT_MS,
-        ))
-        .is_some()
-    {}
+    let _query_guard = bot.lock_command_query();
+    drain_chat(bot);
 
     bot.send_command(&format!("data get entity {selector} {path}"))?;
     let timeout = std::time::Duration::from_secs(3);
@@ -364,6 +454,15 @@ fn query_entity_data_message(bot: &TestBot, selector: &str, path: &str) -> Resul
     }
 
     anyhow::bail!("timed out querying entity {selector} {path}")
+}
+
+fn drain_chat(bot: &TestBot) {
+    while bot
+        .recv_chat_timeout(std::time::Duration::from_millis(
+            tick::CHAT_DRAIN_TIMEOUT_MS,
+        ))
+        .is_some()
+    {}
 }
 
 fn parse_numbers_after_colon(message: &str) -> Vec<f64> {

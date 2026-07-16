@@ -285,12 +285,18 @@ pub fn execute_action(
                         }
                     }
                     AssertType::Entity(check) => {
-                        let requested_nbt = check
-                            .nbt
-                            .as_ref()
-                            .map(|nbt| nbt.requested_paths())
-                            .unwrap_or_default();
-                        let actual = world.get_entity(&check.entity_alias, &requested_nbt);
+                        let requested_nbt = check.nbt.requested_paths();
+                        let actual = if let Some(alias) = check.entity_alias.as_deref() {
+                            world.get_entity(alias, &requested_nbt)
+                        } else {
+                            world.find_entity(
+                                check
+                                    .entity_type
+                                    .as_deref()
+                                    .expect("entity check requires an alias or entity type"),
+                                &requested_nbt,
+                            )
+                        };
                         if !flint_core::runner::entity_matches(&actual, check) {
                             return Ok(ActionOutcome::AssertFailed(
                                 AssertEntityFail::new(tick, check, &actual).into(),
@@ -302,7 +308,11 @@ pub fn execute_action(
                                 "    {} Tick {}: assert entity {} matches expected",
                                 "✓".green(),
                                 tick,
-                                check.entity_alias
+                                check
+                                    .entity_alias
+                                    .as_deref()
+                                    .or(check.entity_type.as_deref())
+                                    .unwrap_or("unknown entity")
                             );
                         }
                     }
