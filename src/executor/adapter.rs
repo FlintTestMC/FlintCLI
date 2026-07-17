@@ -133,13 +133,22 @@ impl FlintWorld for MinecraftWorld {
         }
     }
 
-    fn get_block(&self, pos: BlockPos) -> Block {
+    fn get_block(&self, pos: BlockPos, requested_nbt: &[String]) -> Block {
         let world_pos = self.world_pos(pos);
         for _ in 0..10 {
             if let Ok(Some(actual_block_str)) = self.bot.get_block(world_pos) {
                 let normalized_id = block::extract_block_id(&actual_block_str);
-                let block = block::make_block(&normalized_id);
+                let mut block = block::make_block(&normalized_id);
                 if !normalized_id.is_empty() {
+                    let values = requested_nbt.iter().filter_map(|path| {
+                        query_block_data(&self.bot, world_pos, path)
+                            .ok()
+                            .map(|value| (path.clone(), value))
+                    });
+                    let nbt = flint_core::test_spec::EntityNbt::from_string_values(values);
+                    if !requested_nbt.is_empty() {
+                        block.nbt = Some(nbt);
+                    }
                     return block;
                 }
             }
@@ -149,6 +158,7 @@ impl FlintWorld for MinecraftWorld {
         Block {
             id: "minecraft:air".to_string(),
             properties: Default::default(),
+            nbt: None,
         }
     }
 
@@ -430,6 +440,44 @@ fn query_entity_data(bot: &TestBot, selector: &str, path: &str) -> Result<String
         .split_once(':')
         .map(|(_, value)| value.trim().to_string())
         .unwrap_or_else(|| message.trim().to_string()))
+}
+
+fn query_block_data(bot: &TestBot, pos: BlockPos, path: &str) -> Result<String> {
+    let _query_guard = bot.lock_command_query();
+    drain_chat(bot);
+    bot.send_command(&format!(
+        "data get block {} {} {} {path}",
+        pos[0], pos[1], pos[2]
+    ))?;
+    let timeout = std::time::Duration::from_secs(3);
+    let started = std::time::Instant::now();
+    while started.elapsed() < timeout {
+        if let Some((sender, message)) =
+            bot.recv_chat_timeout(std::time::Duration::from_millis(tick::CHAT_POLL_TIMEOUT_MS))
+        {
+            if sender.is_some() {
+                continue;
+            }
+            if message.contains("is not a block entity")
+                || message.contains("Found no elements")
+                || message.contains("No elements matching")
+            {
+                anyhow::bail!("block entity query failed: {message}");
+            }
+            if message.contains(path) || message.contains("block data") {
+                return Ok(message
+                    .split_once(':')
+                    .map(|(_, value)| value.trim().to_string())
+                    .unwrap_or_else(|| message.trim().to_string()));
+            }
+        }
+    }
+    anyhow::bail!(
+        "timed out querying block entity at [{}, {}, {}] {path}",
+        pos[0],
+        pos[1],
+        pos[2]
+    )
 }
 
 fn query_entity_data_message(bot: &TestBot, selector: &str, path: &str) -> Result<String> {

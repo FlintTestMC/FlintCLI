@@ -346,6 +346,22 @@ World daytime can be queried in an assertion with `{ "time": 1000 }`. The value 
 { "at": 0, "do": "place", "pos": [0, 64, 0], "block": "minecraft:stone" }
 ```
 
+Block entities can be initialized with an explicit `nbt` object:
+```json
+{
+  "at": 0,
+  "do": "place",
+  "pos": [0, 64, 0],
+  "block": {
+    "id": "minecraft:hopper",
+    "facing": "down",
+    "nbt": {
+      "Items": [{ "Slot": "0b", "id": "minecraft:cobblestone", "count": 1 }]
+    }
+  }
+}
+```
+
 **place_each** -- place multiple blocks:
 ```json
 {
@@ -396,6 +412,20 @@ World daytime can be queried in an assertion with `{ "time": 1000 }`. The value 
 Blocks can include state properties:
 ```json
 { "pos": [0, 64, 0], "is": { "id": "minecraft:oak_fence", "properties": { "east": "true" } } }
+```
+
+Block-entity assertions use NBT data paths inside `nbt`:
+```json
+{
+  "pos": [0, 64, 0],
+  "is": {
+    "id": "minecraft:chest",
+    "nbt": {
+      "Items[0].id": "minecraft:cobblestone",
+      "Items[0].count": 1
+    }
+  }
+}
 ```
 
 Assertions can also check summoned entities by alias:

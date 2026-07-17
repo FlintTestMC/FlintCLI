@@ -1,7 +1,6 @@
 //! Test action execution - block placement, assertions, etc.
 
 use crate::executor::adapter::{MinecraftPlayer, MinecraftWorld};
-use crate::executor::block;
 use anyhow::Result;
 use colored::Colorize;
 use flint_core::results::{ActionOutcome, AssertEntityFail, AssertFailure, AssertTimeFail};
@@ -99,6 +98,7 @@ pub fn execute_action(
             let air = flint_core::test_spec::Block {
                 id: "minecraft:air".to_string(),
                 properties: Default::default(),
+                nbt: None,
             };
             world.set_block_checked(*pos, &air)?;
             if verbose {
@@ -141,24 +141,16 @@ pub fn execute_action(
                 match check {
                     AssertType::Block(check) => {
                         let expected_blocks = check.is.to_vec();
-                        let actual = world.get_block(check.pos);
-
-                        // Helper function to check ID match (allowing for optional minecraft: prefix difference)
-                        let check_id = |actual: &str, expected: &str| -> bool {
-                            let actual_clean = actual.strip_prefix("minecraft:").unwrap_or(actual);
-                            let expected_clean =
-                                expected.strip_prefix("minecraft:").unwrap_or(expected);
-                            actual_clean.to_lowercase() == expected_clean.to_lowercase()
-                        };
+                        let requested_nbt = expected_blocks
+                            .iter()
+                            .filter_map(|block| block.nbt.as_ref())
+                            .flat_map(|nbt| nbt.requested_paths())
+                            .collect::<Vec<_>>();
+                        let actual = world.get_block(check.pos, &requested_nbt);
 
                         let mut matched_any = false;
                         for expected_block in &expected_blocks {
-                            // Check block type
-                            let matches_id = check_id(&actual.id, &expected_block.id);
-                            let matches_props =
-                                matches_id && block::properties_match(&actual, expected_block);
-
-                            if matches_id && matches_props {
+                            if flint_core::runner::block_matches(&actual, expected_block) {
                                 matched_any = true;
                                 break;
                             }
@@ -170,6 +162,7 @@ pub fn execute_action(
                                     flint_core::test_spec::Block {
                                         id: "minecraft:air".to_string(),
                                         properties: Default::default(),
+                                        nbt: None,
                                     }
                                 });
 
@@ -200,6 +193,7 @@ pub fn execute_action(
                                     flint_core::test_spec::Block {
                                         id: "minecraft:air".to_string(),
                                         properties: Default::default(),
+                                        nbt: None,
                                     }
                                 });
                             println!(
