@@ -362,6 +362,7 @@ impl RecorderState {
                     region: cleanup_region,
                 }),
                 player: None,
+                world: Default::default(),
             }),
             timeline: timeline_entries,
             breakpoints: Vec::new(),

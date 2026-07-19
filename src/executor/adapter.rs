@@ -20,16 +20,17 @@ impl MinecraftAdapter {
 }
 
 impl FlintAdapter for MinecraftAdapter {
-    fn create_test_world(&self) -> Box<dyn FlintWorld> {
+    fn create_test_world(&self) -> Result<Box<dyn FlintWorld>> {
         // Freeze time globally first when creating test world
-        let _ = self.bot.send_command_synced("tick freeze");
+        self.bot.send_command_synced("tick freeze")?;
 
-        Box::new(MinecraftWorld {
+        Ok(Box::new(MinecraftWorld {
             bot: self.bot.clone(),
             offset: [0, 0, 0],
             current_tick: 0,
             entities: HashMap::new(),
-        })
+            entity_bounds: None,
+        }))
     }
 
     fn server_info(&self) -> ServerInfo {
@@ -44,6 +45,7 @@ pub struct MinecraftWorld {
     pub offset: [i32; 3],
     pub current_tick: u64,
     pub(crate) entities: HashMap<String, MinecraftEntity>,
+    pub(crate) entity_bounds: Option<[[i32; 3]; 2]>,
 }
 
 #[derive(Debug, Clone)]
@@ -111,44 +113,47 @@ impl Drop for MinecraftWorld {
 }
 
 impl FlintWorld for MinecraftWorld {
-    fn do_tick(&mut self) {
+    fn do_tick(&mut self) -> Result<()> {
         let mut bot = self.bot.clone();
-        let _ = tick::step_tick(&mut bot, false);
+        tick::step_tick(&mut bot, false)?;
         self.current_tick += 1;
+        Ok(())
     }
 
     fn current_tick(&self) -> u64 {
         self.current_tick
     }
 
-    fn get_block(&self, pos: BlockPos) -> Block {
+    fn get_time(&self) -> Result<u64> {
+        query_daytime(&self.bot)
+    }
+
+    fn get_block(&self, pos: BlockPos, requested_nbt: &[String]) -> Result<Block> {
         let world_pos = self.world_pos(pos);
         for _ in 0..10 {
             if let Ok(Some(actual_block_str)) = self.bot.get_block(world_pos) {
                 let normalized_id = block::extract_block_id(&actual_block_str);
-                let block = block::make_block(&normalized_id);
+                let mut block = block::make_block(&normalized_id);
                 if !normalized_id.is_empty() {
-                    return block;
+                    let mut values = Vec::with_capacity(requested_nbt.len());
+                    for path in requested_nbt {
+                        values.push((path.clone(), query_block_data(&self.bot, world_pos, path)?));
+                    }
+                    let nbt = flint_core::test_spec::EntityNbt::from_string_values(values);
+                    if !requested_nbt.is_empty() {
+                        block.nbt = Some(nbt);
+                    }
+                    return Ok(block);
                 }
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
 
-        Block {
-            id: "minecraft:air".to_string(),
-            properties: Default::default(),
-        }
+        anyhow::bail!("timed out reading block at {world_pos:?}")
     }
 
-    fn set_block(&mut self, pos: BlockPos, block: &Block) {
-        if let Err(error) = self.set_block_checked(pos, block) {
-            tracing::error!(
-                "Failed to set block at {:?} to {}: {}",
-                pos,
-                block.id,
-                error
-            );
-        }
+    fn set_block(&mut self, pos: BlockPos, block: &Block) -> Result<()> {
+        self.set_block_checked(pos, block)
     }
 
     fn summon_entity(
@@ -157,17 +162,15 @@ impl FlintWorld for MinecraftWorld {
         entity_type: &str,
         pos: [f64; 3],
         nbt: Option<&EntityNbt>,
-    ) {
+    ) -> Result<()> {
         let Some(tag) = Self::entity_tag(alias) else {
-            tracing::error!("Invalid entity alias for summon: {}", alias);
-            return;
+            anyhow::bail!("invalid entity alias for summon: {alias}");
         };
         if entity_type
             .chars()
             .any(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == ':' || c == '.'))
         {
-            tracing::error!("Invalid entity type for summon: {}", entity_type);
-            return;
+            anyhow::bail!("invalid entity type for summon: {entity_type}");
         }
         let world_pos = [
             pos[0] + f64::from(self.offset[0]),
@@ -180,10 +183,7 @@ impl FlintWorld for MinecraftWorld {
             "summon {} {} {} {} {}",
             entity_type, world_pos[0], world_pos[1], world_pos[2], nbt
         );
-        if let Err(error) = self.bot.send_command(&cmd) {
-            tracing::error!("Failed to summon entity alias {}: {}", alias, error);
-            return;
-        }
+        self.bot.send_command(&cmd)?;
         self.entities.insert(
             alias.to_string(),
             MinecraftEntity {
@@ -191,12 +191,12 @@ impl FlintWorld for MinecraftWorld {
                 tag,
             },
         );
+        Ok(())
     }
 
-    fn teleport_entity(&mut self, alias: &str, pos: [f64; 3], rot: Option<[f32; 2]>) {
+    fn teleport_entity(&mut self, alias: &str, pos: [f64; 3], rot: Option<[f32; 2]>) -> Result<()> {
         let Some(entity) = self.entities.get(alias) else {
-            tracing::error!("Cannot teleport unknown entity alias: {}", alias);
-            return;
+            anyhow::bail!("cannot teleport unknown entity alias: {alias}");
         };
         let selector = Self::entity_selector(entity);
         let world_pos = [
@@ -214,25 +214,15 @@ impl FlintWorld for MinecraftWorld {
                 selector, world_pos[0], world_pos[1], world_pos[2]
             ),
         };
-        if let Err(error) = self.bot.send_command(&cmd) {
-            tracing::error!("Failed to teleport entity alias {}: {}", alias, error);
-        }
+        self.bot.send_command(&cmd)
     }
 
-    fn get_entity(&self, alias: &str, requested_nbt: &[String]) -> EntityState {
+    fn get_entity(&self, alias: &str, requested_nbt: &[String]) -> Result<Vec<EntityState>> {
         let Some(entity) = self.entities.get(alias) else {
-            return EntityState::default();
+            return Ok(Vec::new());
         };
         let selector = Self::entity_selector(entity);
-        let Ok(values) = query_entity_numbers(&self.bot, &selector, "Pos") else {
-            return EntityState {
-                exists: false,
-                entity_type: Some(entity.entity_type.clone()),
-                pos: None,
-                rot: None,
-                nbt: HashMap::new(),
-            };
-        };
+        let values = query_entity_numbers(&self.bot, &selector, "Pos")?;
         let pos = values.get(..3).map(|pos| {
             [
                 pos[0] - f64::from(self.offset[0]),
@@ -240,22 +230,81 @@ impl FlintWorld for MinecraftWorld {
                 pos[2] - f64::from(self.offset[2]),
             ]
         });
-        let rot = query_entity_numbers(&self.bot, &selector, "Rotation")
-            .ok()
-            .and_then(|rot| rot.get(..2).map(|rot| [rot[0] as f32, rot[1] as f32]));
+        let rotation = query_entity_numbers(&self.bot, &selector, "Rotation")?;
+        let rot = rotation.get(..2).map(|rot| [rot[0] as f32, rot[1] as f32]);
         let mut nbt = HashMap::new();
         for path in requested_nbt {
-            if let Ok(value) = query_entity_data(&self.bot, &selector, path) {
-                nbt.insert(path.clone(), value);
-            }
+            nbt.insert(path.clone(), query_entity_data(&self.bot, &selector, path)?);
         }
-        EntityState {
-            exists: true,
+        Ok(vec![EntityState {
             entity_type: Some(entity.entity_type.clone()),
             pos,
             rot,
             nbt,
+        }])
+    }
+
+    fn find_entity(&self, entity_type: &str, requested_nbt: &[String]) -> Result<Vec<EntityState>> {
+        if entity_type
+            .chars()
+            .any(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == ':' || c == '.'))
+        {
+            anyhow::bail!("invalid entity type for lookup: {entity_type}");
         }
+        let all_selector = if let Some([min, max]) = self.entity_bounds {
+            format!(
+                "@e[type={entity_type},x={},y={},z={},dx={},dy={},dz={}]",
+                min[0],
+                min[1],
+                min[2],
+                max[0] - min[0],
+                max[1] - min[1],
+                max[2] - min[2]
+            )
+        } else {
+            format!("@e[type={entity_type}]")
+        };
+        let count = query_entity_count(&self.bot, &all_selector)?;
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+
+        const SCANNED_TAG: &str = "flintmc.assert.scanned";
+        self.bot
+            .send_command_synced(&format!("tag {all_selector} remove {SCANNED_TAG}"))?;
+        let mut entities = Vec::with_capacity(count);
+        for _ in 0..count {
+            let selector = all_selector.replacen(
+                "@e[",
+                &format!("@e[tag=!{SCANNED_TAG},sort=nearest,limit=1,"),
+                1,
+            );
+            let values = query_entity_numbers(&self.bot, &selector, "Pos")?;
+            let pos = values.get(..3).map(|pos| {
+                [
+                    pos[0] - f64::from(self.offset[0]),
+                    pos[1] - f64::from(self.offset[1]),
+                    pos[2] - f64::from(self.offset[2]),
+                ]
+            });
+            let rotation = query_entity_numbers(&self.bot, &selector, "Rotation")?;
+            let rot = rotation.get(..2).map(|rot| [rot[0] as f32, rot[1] as f32]);
+            let mut nbt = HashMap::new();
+            for path in requested_nbt {
+                nbt.insert(path.clone(), query_entity_data(&self.bot, &selector, path)?);
+            }
+            entities.push(EntityState {
+                entity_type: Some(entity_type.to_string()),
+                pos,
+                rot,
+                nbt,
+            });
+            self.bot
+                .send_command_synced(&format!("tag {selector} add {SCANNED_TAG}"))?;
+        }
+        self.bot
+            .send_command_synced(&format!("tag {all_selector} remove {SCANNED_TAG}"))?;
+        Ok(entities)
     }
 
     fn create_player(&mut self) -> Box<dyn FlintPlayer> {
@@ -270,6 +319,21 @@ impl FlintWorld for MinecraftWorld {
             game_mode: GameMode::Creative,
         })
     }
+
+    fn fill(&mut self, region: [[i32; 3]; 2], block: &Block) -> Result<()> {
+        let world_min = self.world_pos(region[0]);
+        let world_max = self.world_pos(region[1]);
+        self.bot.send_command_synced(&format!(
+            "fill {} {} {} {} {} {} {}",
+            world_min[0],
+            world_min[1],
+            world_min[2],
+            world_max[0],
+            world_max[1],
+            world_max[2],
+            block.to_command()
+        ))
+    }
 }
 
 fn query_entity_numbers(bot: &TestBot, selector: &str, path: &str) -> Result<Vec<f64>> {
@@ -281,6 +345,69 @@ fn query_entity_numbers(bot: &TestBot, selector: &str, path: &str) -> Result<Vec
     Ok(values)
 }
 
+fn query_entity_count(bot: &TestBot, selector: &str) -> Result<usize> {
+    let _query_guard = bot.lock_command_query();
+    drain_chat(bot);
+    bot.send_command(&format!("execute if entity {selector}"))?;
+    let timeout = std::time::Duration::from_secs(3);
+    let started = std::time::Instant::now();
+    while started.elapsed() < timeout {
+        if let Some((sender, message)) =
+            bot.recv_chat_timeout(std::time::Duration::from_millis(tick::CHAT_POLL_TIMEOUT_MS))
+        {
+            if sender.is_some() {
+                continue;
+            }
+            if message.contains("Test failed") || message.contains("No entity was found") {
+                return Ok(0);
+            }
+            if let Some(count) = message
+                .split(|character: char| !character.is_ascii_digit())
+                .rfind(|part| !part.is_empty())
+                .and_then(|part| part.parse::<usize>().ok())
+            {
+                return Ok(count);
+            }
+        }
+    }
+    anyhow::bail!("timed out counting entities matching {selector}")
+}
+
+pub(crate) fn query_daytime(bot: &TestBot) -> Result<u64> {
+    query_time_command(bot, "time query minecraft:day", "daytime").map(|time| time % 24_000)
+}
+
+pub(crate) fn query_gametime(bot: &TestBot) -> Result<u64> {
+    query_time_command(bot, "time query gametime", "game time")
+}
+
+fn query_time_command(bot: &TestBot, command: &str, label: &str) -> Result<u64> {
+    let _query_guard = bot.lock_command_query();
+    drain_chat(bot);
+
+    bot.send_command(command)?;
+    let timeout = std::time::Duration::from_secs(3);
+    let started = std::time::Instant::now();
+    while started.elapsed() < timeout {
+        if let Some((sender, message)) =
+            bot.recv_chat_timeout(std::time::Duration::from_millis(tick::CHAT_POLL_TIMEOUT_MS))
+        {
+            if sender.is_some() || !message.to_ascii_lowercase().contains("time") {
+                continue;
+            }
+            if let Some(time) = message
+                .split(|character: char| !character.is_ascii_digit())
+                .rfind(|part| !part.is_empty())
+                .and_then(|part| part.parse::<u64>().ok())
+            {
+                return Ok(time);
+            }
+            anyhow::bail!("time query returned no numeric {label}: {message}");
+        }
+    }
+    anyhow::bail!("timed out querying world {label}")
+}
+
 fn query_entity_data(bot: &TestBot, selector: &str, path: &str) -> Result<String> {
     let message = query_entity_data_message(bot, selector, path)?;
     Ok(message
@@ -289,13 +416,47 @@ fn query_entity_data(bot: &TestBot, selector: &str, path: &str) -> Result<String
         .unwrap_or_else(|| message.trim().to_string()))
 }
 
+fn query_block_data(bot: &TestBot, pos: BlockPos, path: &str) -> Result<String> {
+    let _query_guard = bot.lock_command_query();
+    drain_chat(bot);
+    bot.send_command(&format!(
+        "data get block {} {} {} {path}",
+        pos[0], pos[1], pos[2]
+    ))?;
+    let timeout = std::time::Duration::from_secs(3);
+    let started = std::time::Instant::now();
+    while started.elapsed() < timeout {
+        if let Some((sender, message)) =
+            bot.recv_chat_timeout(std::time::Duration::from_millis(tick::CHAT_POLL_TIMEOUT_MS))
+        {
+            if sender.is_some() {
+                continue;
+            }
+            if message.contains("is not a block entity")
+                || message.contains("Found no elements")
+                || message.contains("No elements matching")
+            {
+                anyhow::bail!("block entity query failed: {message}");
+            }
+            if message.contains(path) || message.contains("block data") {
+                return Ok(message
+                    .split_once(':')
+                    .map(|(_, value)| value.trim().to_string())
+                    .unwrap_or_else(|| message.trim().to_string()));
+            }
+        }
+    }
+    anyhow::bail!(
+        "timed out querying block entity at [{}, {}, {}] {path}",
+        pos[0],
+        pos[1],
+        pos[2]
+    )
+}
+
 fn query_entity_data_message(bot: &TestBot, selector: &str, path: &str) -> Result<String> {
-    while bot
-        .recv_chat_timeout(std::time::Duration::from_millis(
-            tick::CHAT_DRAIN_TIMEOUT_MS,
-        ))
-        .is_some()
-    {}
+    let _query_guard = bot.lock_command_query();
+    drain_chat(bot);
 
     bot.send_command(&format!("data get entity {selector} {path}"))?;
     let timeout = std::time::Duration::from_secs(3);
@@ -315,6 +476,15 @@ fn query_entity_data_message(bot: &TestBot, selector: &str, path: &str) -> Resul
     }
 
     anyhow::bail!("timed out querying entity {selector} {path}")
+}
+
+fn drain_chat(bot: &TestBot) {
+    while bot
+        .recv_chat_timeout(std::time::Duration::from_millis(
+            tick::CHAT_DRAIN_TIMEOUT_MS,
+        ))
+        .is_some()
+    {}
 }
 
 fn parse_numbers_after_colon(message: &str) -> Vec<f64> {
@@ -371,42 +541,33 @@ impl FlintPlayer for MinecraftPlayer {
         self
     }
 
-    fn set_slot(&mut self, slot: PlayerSlot, item: Option<&Item>) {
-        if let Err(error) = self.set_slot_checked(slot, item) {
-            tracing::error!("Failed to set player slot {:?}: {}", slot, error);
-        }
+    fn set_slot(&mut self, slot: PlayerSlot, item: Option<&Item>) -> Result<()> {
+        self.set_slot_checked(slot, item)
     }
 
-    fn get_slot(&self, slot: PlayerSlot, _requested_data: Vec<String>) -> Option<Item> {
-        self.inventory.get(&slot).cloned()
+    fn get_slot(&mut self, slot: PlayerSlot, _requested_data: Vec<String>) -> Result<Option<Item>> {
+        self.restore_inventory()?;
+        Ok(self.inventory.get(&slot).cloned())
     }
 
-    fn select_hotbar(&mut self, slot: u8) {
-        if let Err(error) = self.select_hotbar_checked(slot) {
-            tracing::error!("Failed to select hotbar slot {}: {}", slot, error);
-        }
+    fn select_hotbar(&mut self, slot: u8) -> Result<()> {
+        self.select_hotbar_checked(slot)
     }
 
     fn selected_hotbar(&self) -> u8 {
         self.selected_hotbar
     }
 
-    fn teleport(&mut self, pos: [f64; 3], rot: Option<[f32; 2]>) {
-        if let Err(error) = self.teleport_checked(pos, rot) {
-            tracing::error!("Failed to teleport player: {}", error);
-        }
+    fn teleport(&mut self, pos: [f64; 3], rot: Option<[f32; 2]>) -> Result<()> {
+        self.teleport_checked(pos, rot)
     }
 
-    fn interact(&mut self) {
-        if let Err(error) = self.interact_checked() {
-            tracing::error!("Failed to interact: {}", error);
-        }
+    fn interact(&mut self) -> Result<()> {
+        self.interact_checked()
     }
 
-    fn set_game_mode(&mut self, mode: GameMode) {
-        if let Err(error) = self.set_game_mode_checked(mode) {
-            tracing::error!("Failed to set game mode {:?}: {}", mode, error);
-        }
+    fn set_game_mode(&mut self, mode: GameMode) -> Result<()> {
+        self.set_game_mode_checked(mode)
     }
 }
 

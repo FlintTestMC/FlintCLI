@@ -84,6 +84,7 @@ pub struct TestBot {
     update_rx: Option<Arc<parking_lot::Mutex<UpdateReceiver>>>,
     next_inventory_owner: Arc<AtomicU64>,
     next_command_ack: Arc<AtomicU64>,
+    command_query_lock: Arc<parking_lot::Mutex<()>>,
     active_player: Arc<parking_lot::Mutex<ActivePlayer>>,
     view_distance: Arc<AtomicU32>,
     simulation_distance: Arc<AtomicU32>,
@@ -99,6 +100,7 @@ impl Default for TestBot {
             update_rx: None,
             next_inventory_owner: Arc::new(AtomicU64::new(1)),
             next_command_ack: Arc::new(AtomicU64::new(1)),
+            command_query_lock: Arc::new(parking_lot::Mutex::new(())),
             active_player: Arc::new(parking_lot::Mutex::new(ActivePlayer::default())),
             view_distance: Arc::new(AtomicU32::new(0)),
             simulation_distance: Arc::new(AtomicU32::new(0)),
@@ -109,6 +111,10 @@ impl Default for TestBot {
 impl TestBot {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub(crate) fn lock_command_query(&self) -> parking_lot::MutexGuard<'_, ()> {
+        self.command_query_lock.lock()
     }
 
     /// Get a reference to the client, or error if not connected

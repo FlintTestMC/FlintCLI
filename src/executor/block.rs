@@ -114,12 +114,17 @@ pub fn make_block(block_str: &str) -> Block {
             }
         }
 
-        return Block { id, properties };
+        return Block {
+            id,
+            properties,
+            nbt: None,
+        };
     }
 
     Block {
         id: block_str.to_string(),
         properties: FxHashMap::default(),
+        nbt: None,
     }
 }
 

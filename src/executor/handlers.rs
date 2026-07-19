@@ -4,8 +4,10 @@ use anyhow::Result;
 use flint_core::loader::TestLoader;
 use flint_core::spatial::pair_tests_with_offsets;
 use flint_core::test_spec::TestSpec;
+use std::path::PathBuf;
 
 use super::{DEFAULT_TESTS_DIR, TestExecutor, block, recorder, tick};
+use crate::spatial_batch::group_tests_by_world_config;
 
 /// Parse command parts from a chat message
 /// Returns (command, args) if a valid command was found
@@ -30,6 +32,37 @@ pub fn parse_command(message: &str) -> Option<(String, Vec<String>)> {
     let args: Vec<String> = parts[1..].iter().map(|s| s.to_string()).collect();
 
     Some((command, args))
+}
+
+fn load_test_specs(test_files: &[PathBuf]) -> impl Iterator<Item = TestSpec> + '_ {
+    test_files
+        .iter()
+        .filter_map(|test_file| TestSpec::from_file(test_file, false).ok())
+}
+
+fn test_label(test: &TestSpec) -> String {
+    if test.tags.is_empty() {
+        test.name.clone()
+    } else {
+        format!("{} [{}]", test.name, test.tags.join(", "))
+    }
+}
+
+fn find_test(test_files: &[PathBuf], name: &str) -> Option<TestSpec> {
+    let name = name.to_lowercase();
+    let mut partial_match = None;
+
+    for test in load_test_specs(test_files) {
+        let test_name = test.name.to_lowercase();
+        if test_name == name {
+            return Some(test);
+        }
+        if partial_match.is_none() && test_name.contains(&name) {
+            partial_match = Some(test);
+        }
+    }
+
+    partial_match
 }
 
 impl TestExecutor {
@@ -66,16 +99,9 @@ impl TestExecutor {
     pub(super) fn handle_list(&mut self, all_test_files: &[std::path::PathBuf]) -> Result<()> {
         self.bot
             .send_command(&format!("say Found {} tests:", all_test_files.len()))?;
-        for test_file in all_test_files {
-            if let Ok(test) = TestSpec::from_file(test_file, false) {
-                let tags = if test.tags.is_empty() {
-                    String::new()
-                } else {
-                    format!(" [{}]", test.tags.join(", "))
-                };
-                self.bot
-                    .send_command_synced(&format!("say - {}{}", test.name, tags))?;
-            }
+        for test in load_test_specs(all_test_files) {
+            self.bot
+                .send_command_synced(&format!("say - {}", test_label(&test)))?;
         }
         Ok(())
     }
@@ -87,17 +113,10 @@ impl TestExecutor {
     ) -> Result<()> {
         let pattern_lower = pattern.to_lowercase();
         let mut found = 0;
-        for test_file in all_test_files {
-            if let Ok(test) = TestSpec::from_file(test_file, false)
-                && test.name.to_lowercase().contains(&pattern_lower)
-            {
-                let tags = if test.tags.is_empty() {
-                    String::new()
-                } else {
-                    format!(" [{}]", test.tags.join(", "))
-                };
+        for test in load_test_specs(all_test_files) {
+            if test.name.to_lowercase().contains(&pattern_lower) {
                 self.bot
-                    .send_command_synced(&format!("say - {}{}", test.name, tags))?;
+                    .send_command_synced(&format!("say - {}", test_label(&test)))?;
                 found += 1;
             }
         }
@@ -117,32 +136,7 @@ impl TestExecutor {
         test_name: &str,
         step_mode: bool,
     ) -> Result<()> {
-        let name_lower = test_name.to_lowercase();
-
-        // First pass: look for exact match
-        let mut found_test = None;
-        for test_file in all_test_files {
-            if let Ok(test) = TestSpec::from_file(test_file, false)
-                && test.name.to_lowercase() == name_lower
-            {
-                found_test = Some(test);
-                break;
-            }
-        }
-
-        // Second pass: fall back to partial match if no exact match
-        if found_test.is_none() {
-            for test_file in all_test_files {
-                if let Ok(test) = TestSpec::from_file(test_file, false)
-                    && test.name.to_lowercase().contains(&name_lower)
-                {
-                    found_test = Some(test);
-                    break;
-                }
-            }
-        }
-
-        if let Some(test) = found_test {
+        if let Some(test) = find_test(all_test_files, test_name) {
             if step_mode {
                 self.bot.send_command(&format!(
                     "say Running test: {} (step mode - type 's' or 'c')",
@@ -174,17 +168,7 @@ impl TestExecutor {
             all_test_files.len()
         ))?;
 
-        let mut specs = Vec::new();
-        for test_file in all_test_files {
-            if let Ok(test) = TestSpec::from_file(test_file, false) {
-                specs.push(test);
-            }
-        }
-        let tests_with_offsets = pair_tests_with_offsets(specs);
-        let output = self.run_tests_parallel(&tests_with_offsets, false)?;
-
-        let passed = output.results.iter().filter(|r| r.success).count();
-        let failed = output.results.len() - passed;
+        let (passed, failed) = self.run_test_groups(load_test_specs(all_test_files).collect())?;
         self.bot.send_command(&format!(
             "say Results: {} passed, {} failed",
             passed, failed
@@ -211,22 +195,24 @@ impl TestExecutor {
             tags
         ))?;
 
-        let mut specs = Vec::new();
-        for test_file in &test_files {
-            if let Ok(test) = TestSpec::from_file(test_file, false) {
-                specs.push(test);
-            }
-        }
-        let tests_with_offsets = pair_tests_with_offsets(specs);
-        let output = self.run_tests_parallel(&tests_with_offsets, false)?;
-
-        let passed = output.results.iter().filter(|r| r.success).count();
-        let failed = output.results.len() - passed;
+        let (passed, failed) = self.run_test_groups(load_test_specs(&test_files).collect())?;
         self.bot.send_command(&format!(
             "say Results: {} passed, {} failed",
             passed, failed
         ))?;
         Ok(())
+    }
+
+    fn run_test_groups(&mut self, specs: Vec<TestSpec>) -> Result<(usize, usize)> {
+        let mut passed = 0;
+        let mut failed = 0;
+        for group in group_tests_by_world_config(specs) {
+            let tests_with_offsets = pair_tests_with_offsets(group);
+            let output = self.run_tests_parallel(&tests_with_offsets, false)?;
+            passed += output.results.iter().filter(|r| r.success).count();
+            failed += output.results.iter().filter(|r| !r.success).count();
+        }
+        Ok((passed, failed))
     }
 
     // Recorder command handlers

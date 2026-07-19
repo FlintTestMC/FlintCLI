@@ -17,10 +17,32 @@ use flint_core::results::{ActionOutcome, AssertFailure, AssertPosition, TestResu
 use flint_core::test_spec::{ActionType, AssertType, TestSpec, TimelineEntry};
 use flint_core::timeline::TimelineAggregate;
 use flint_core::traits::{FlintPlayer, FlintWorld};
+use std::collections::BTreeSet;
 use std::io::Write;
 
 // Timing constants
 const DEFAULT_TESTS_DIR: &str = "FlintBenchmark/tests";
+
+fn asserted_entity_types(test: &TestSpec) -> BTreeSet<String> {
+    test.timeline
+        .iter()
+        .filter_map(|entry| match &entry.action_type {
+            ActionType::Assert { checks } => Some(checks),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|check| match check {
+            AssertType::Entity(check) => check.entity_type.clone(),
+            _ => None,
+        })
+        .filter(|entity_type| {
+            !entity_type.is_empty()
+                && entity_type.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | ':' | '.')
+                })
+        })
+        .collect()
+}
 
 // Progress bar constants
 const PROGRESS_BAR_WIDTH: usize = 40;
@@ -320,23 +342,10 @@ impl TestExecutor {
         center: [i32; 3],
         radius: i32,
     ) -> Result<std::collections::HashMap<[i32; 3], String>> {
-        let mut blocks = std::collections::HashMap::new();
-
-        for x in (center[0] - radius)..=(center[0] + radius) {
-            for y in (center[1] - radius).max(-64)..=(center[1] + radius).min(319) {
-                for z in (center[2] - radius)..=(center[2] + radius) {
-                    let pos = [x, y, z];
-                    if let Ok(Some(block)) = self.bot.get_block(pos) {
-                        let block_id = block::extract_block_id(&block);
-                        if !block_id.to_lowercase().contains("air") {
-                            blocks.insert(pos, block_id);
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(blocks)
+        self.scan_region(
+            [center[0] - radius, center[1] - radius, center[2] - radius],
+            [center[0] + radius, center[1] + radius, center[2] + radius],
+        )
     }
 
     /// Scan blocks within an AABB (inclusive bounds, in world coordinates).
@@ -362,6 +371,140 @@ impl TestExecutor {
         Ok(blocks)
     }
 
+    fn validate_test_batch(tests_with_offsets: &[(TestSpec, [i32; 3])]) -> Result<&TestSpec> {
+        let Some((first, _)) = tests_with_offsets.first() else {
+            anyhow::bail!("cannot run an empty test batch");
+        };
+        if tests_with_offsets
+            .iter()
+            .any(|(test, _)| test.world_config() != first.world_config())
+        {
+            anyhow::bail!("parallel tests must use the same world configuration");
+        }
+        Ok(first)
+    }
+
+    fn layout_center(tests_with_offsets: &[(TestSpec, [i32; 3])]) -> [f64; 3] {
+        let (min, max) = tests_with_offsets.iter().fold(
+            ([i32::MAX; 3], [i32::MIN; 3]),
+            |(mut min, mut max), (test, offset)| {
+                let region = test.cleanup_region();
+                for axis in 0..3 {
+                    min[axis] = min[axis].min(region[0][axis] + offset[axis]);
+                    max[axis] = max[axis].max(region[1][axis] + offset[axis]);
+                }
+                (min, max)
+            },
+        );
+        [
+            f64::from((min[0] + max[0]).div_euclid(2)) + 0.5,
+            64.0,
+            f64::from((min[2] + max[2]).div_euclid(2)) + 0.5,
+        ]
+    }
+
+    fn configure_batch_world(&mut self, first: &TestSpec) -> Result<()> {
+        self.bot.send_command_synced("tick freeze")?;
+        let game_time = adapter::query_gametime(&self.bot)?;
+        for _ in 0..(20 - game_time % 20) % 20 {
+            tick::step_tick(&mut self.bot, false)?;
+        }
+
+        let world_config = first.world_config();
+        let mut gamerules: Vec<_> = world_config.gamerules.iter().collect();
+        gamerules.sort_by_key(|(name, _)| *name);
+        for (name, value) in gamerules {
+            self.bot
+                .send_command_synced(&format!("gamerule {name} {value}"))?;
+        }
+        self.bot
+            .send_command_synced(&format!("time set {}", world_config.time))?;
+        self.bot
+            .send_command_synced(&format!("weather {}", world_config.weather))?;
+        Ok(())
+    }
+
+    fn cleanup_test_area(&self, test: &TestSpec, offset: [i32; 3]) -> Result<()> {
+        let region = test.cleanup_region();
+        let min = self.apply_offset(region[0], offset);
+        let max = self.apply_offset(region[1], offset);
+        self.bot.send_command_synced(&format!(
+            "fill {} {} {} {} {} {} air",
+            min[0], min[1], min[2], max[0], max[1], max[2]
+        ))?;
+        for entity_type in asserted_entity_types(test) {
+            self.bot.send_command_synced(&format!(
+                "kill @e[type={entity_type},x={},y={},z={},dx={},dy={},dz={}]",
+                min[0],
+                min[1],
+                min[2],
+                max[0] - min[0],
+                max[1] - min[1],
+                max[2] - min[2]
+            ))?;
+        }
+        Ok(())
+    }
+
+    fn create_batch_worlds(
+        &self,
+        tests_with_offsets: &[(TestSpec, [i32; 3])],
+    ) -> Vec<MinecraftWorld> {
+        tests_with_offsets
+            .iter()
+            .map(|(test, offset)| {
+                let region = test.cleanup_region();
+                MinecraftWorld {
+                    bot: self.bot.clone(),
+                    offset: *offset,
+                    current_tick: 0,
+                    entities: std::collections::HashMap::new(),
+                    entity_bounds: Some([
+                        self.apply_offset(region[0], *offset),
+                        self.apply_offset(region[1], *offset),
+                    ]),
+                }
+            })
+            .collect()
+    }
+
+    fn create_batch_players(
+        worlds: &mut [MinecraftWorld],
+        tests_with_offsets: &[(TestSpec, [i32; 3])],
+    ) -> Result<Vec<Option<Box<dyn FlintPlayer>>>> {
+        tests_with_offsets
+            .iter()
+            .enumerate()
+            .map(|(index, (spec, _))| {
+                let Some(config) = spec.setup.as_ref().and_then(|setup| setup.player.as_ref())
+                else {
+                    return Ok(None);
+                };
+                let mut player = worlds[index].create_player();
+                let minecraft_player = player
+                    .as_any_mut()
+                    .downcast_mut::<adapter::MinecraftPlayer>()
+                    .ok_or_else(|| anyhow::anyhow!("unsupported FlintPlayer implementation"))?;
+                for (slot, item) in &config.inventory {
+                    minecraft_player.set_slot_checked(*slot, Some(item))?;
+                }
+                minecraft_player.select_hotbar_checked(config.selected_hotbar)?;
+                minecraft_player.set_game_mode_checked(config.game_mode)?;
+                Ok(Some(player))
+            })
+            .collect()
+    }
+
+    fn test_max_ticks(aggregate: &TimelineAggregate<'_>, test_count: usize) -> Vec<u32> {
+        let mut max_ticks = vec![0; test_count];
+        for (tick_num, entries) in &aggregate.timeline {
+            for (test_idx, _, _) in entries {
+                max_ticks[*test_idx] = max_ticks[*test_idx].max(*tick_num);
+            }
+        }
+        max_ticks
+    }
+
     /// Run tests in parallel with merged timeline
     pub fn run_tests_parallel(
         &mut self,
@@ -369,6 +512,8 @@ impl TestExecutor {
         break_after_setup: bool,
     ) -> Result<TestRunOutput> {
         let verbose = self.verbose;
+
+        let first = Self::validate_test_batch(tests_with_offsets)?;
 
         if verbose {
             println!(
@@ -395,22 +540,7 @@ impl TestExecutor {
 
         // The stable focus point is the center of the complete parallel layout. Parking
         // here keeps every test as close as possible to the client's loaded chunks.
-        let (layout_min, layout_max) = tests_with_offsets.iter().fold(
-            ([i32::MAX; 3], [i32::MIN; 3]),
-            |(mut min, mut max), (test, offset)| {
-                let region = test.cleanup_region();
-                for axis in 0..3 {
-                    min[axis] = min[axis].min(region[0][axis] + offset[axis]);
-                    max[axis] = max[axis].max(region[1][axis] + offset[axis]);
-                }
-                (min, max)
-            },
-        );
-        let layout_center = [
-            f64::from((layout_min[0] + layout_max[0]).div_euclid(2)) + 0.5,
-            64.0,
-            f64::from((layout_min[2] + layout_max[2]).div_euclid(2)) + 0.5,
-        ];
+        let layout_center = Self::layout_center(tests_with_offsets);
 
         if verbose {
             println!("  Global timeline: {} ticks", aggregate.max_tick);
@@ -433,25 +563,17 @@ impl TestExecutor {
             println!();
         }
 
+        self.configure_batch_world(first)?;
+
         // Clean all test areas before starting
         if verbose {
             println!("{} Cleaning all test areas...", "→".blue());
         }
         for (test, offset) in tests_with_offsets.iter() {
-            let region = test.cleanup_region();
-            let world_min = self.apply_offset(region[0], *offset);
-            let world_max = self.apply_offset(region[1], *offset);
-            let cmd = format!(
-                "fill {} {} {} {} {} {} air",
-                world_min[0], world_min[1], world_min[2], world_max[0], world_max[1], world_max[2]
-            );
-            self.bot.send_command_synced(&cmd)?;
+            self.cleanup_test_area(test, *offset)?;
         }
 
         self.forceload_regions(tests_with_offsets, true)?;
-
-        // Freeze time globally
-        self.bot.send_command_synced("tick freeze")?;
 
         // Break after setup if requested
         let mut stepping_mode = false;
@@ -488,47 +610,14 @@ impl TestExecutor {
         let mut tests_cleaned: Vec<bool> = vec![false; tests_with_offsets.len()];
 
         // Calculate max tick for each test
-        let mut test_max_ticks: Vec<u32> = vec![0; tests_with_offsets.len()];
-        for (tick_num, entries) in &aggregate.timeline {
-            for (test_idx, _, _) in entries {
-                test_max_ticks[*test_idx] = test_max_ticks[*test_idx].max(*tick_num);
-            }
-        }
+        let test_max_ticks = Self::test_max_ticks(&aggregate, tests_with_offsets.len());
 
         let show_progress = !verbose && !self.quiet;
         let fail_fast = self.fail_fast;
 
         // Initialize per-test worlds and players using the trait model
-        let mut worlds: Vec<MinecraftWorld> = tests_with_offsets
-            .iter()
-            .map(|(_test, offset)| MinecraftWorld {
-                bot: self.bot.clone(),
-                offset: *offset,
-                current_tick: 0,
-                entities: std::collections::HashMap::new(),
-            })
-            .collect();
-
-        let mut players: Vec<Option<Box<dyn FlintPlayer>>> =
-            Vec::with_capacity(tests_with_offsets.len());
-        for (idx, (spec, _offset)) in tests_with_offsets.iter().enumerate() {
-            let Some(player_config) = spec.setup.as_ref().and_then(|setup| setup.player.as_ref())
-            else {
-                players.push(None);
-                continue;
-            };
-            let mut player = worlds[idx].create_player();
-            let minecraft_player = player
-                .as_any_mut()
-                .downcast_mut::<adapter::MinecraftPlayer>()
-                .ok_or_else(|| anyhow::anyhow!("unsupported FlintPlayer implementation"))?;
-            for (slot, item) in &player_config.inventory {
-                minecraft_player.set_slot_checked(*slot, Some(item))?;
-            }
-            minecraft_player.select_hotbar_checked(player_config.selected_hotbar)?;
-            minecraft_player.set_game_mode_checked(player_config.game_mode)?;
-            players.push(Some(player));
-        }
+        let mut worlds = self.create_batch_worlds(tests_with_offsets);
+        let mut players = Self::create_batch_players(&mut worlds, tests_with_offsets)?;
 
         // Execute merged timeline
         let mut current_tick = 0;
@@ -570,14 +659,15 @@ impl TestExecutor {
                                     "✗".red().bold(),
                                     test.name,
                                     current_tick,
-                                    String::from(&detail.expected).green(),
-                                    String::from(&detail.actual).red()
+                                    String::from(detail.expected()).green(),
+                                    String::from(detail.actual()).red()
                                 );
                             }
                             if let Some(events) = self.events.as_mut() {
-                                let expected: String = (&detail.expected).into();
-                                let actual: String = (&detail.actual).into();
-                                let AssertPosition::Coordinate { x, y, z } = detail.position else {
+                                let expected: String = detail.expected().into();
+                                let actual: String = detail.actual().into();
+                                let AssertPosition::Coordinate { x, y, z } = detail.position()
+                                else {
                                     anyhow::bail!(
                                         "TODO: emit events for AssertPosition::Slot not yet implemented"
                                     );
@@ -634,19 +724,7 @@ impl TestExecutor {
                             test_max_ticks[test_idx]
                         );
                     }
-                    let region = test.cleanup_region();
-                    let world_min = self.apply_offset(region[0], *offset);
-                    let world_max = self.apply_offset(region[1], *offset);
-                    let cmd = format!(
-                        "fill {} {} {} {} {} {} air",
-                        world_min[0],
-                        world_min[1],
-                        world_min[2],
-                        world_max[0],
-                        world_max[1],
-                        world_max[2]
-                    );
-                    self.bot.send_command_synced(&cmd)?;
+                    self.cleanup_test_area(test, *offset)?;
                     tests_cleaned[test_idx] = true;
                     players[test_idx] = None;
                     self.bot.park_at(layout_center)?;
@@ -735,19 +813,7 @@ impl TestExecutor {
                         test.name
                     );
                 }
-                let region = test.cleanup_region();
-                let world_min = self.apply_offset(region[0], *offset);
-                let world_max = self.apply_offset(region[1], *offset);
-                let cmd = format!(
-                    "fill {} {} {} {} {} {} air",
-                    world_min[0],
-                    world_min[1],
-                    world_min[2],
-                    world_max[0],
-                    world_max[1],
-                    world_max[2]
-                );
-                self.bot.send_command_synced(&cmd)?;
+                self.cleanup_test_area(test, *offset)?;
                 tests_cleaned[test_idx] = true;
                 players[test_idx] = None;
                 self.bot.park_at(layout_center)?;

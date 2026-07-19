@@ -12,7 +12,7 @@ use flint_core::loader::TestLoader;
 use flint_core::results::AssertFailure;
 use flint_core::spatial::calculate_test_offsets_for_batch_default;
 use flint_core::test_spec::{ActionType, TestSpec};
-use spatial_batch::split_tests_by_simulation_distance;
+use spatial_batch::{group_tests_by_world_config, split_tests_by_simulation_distance};
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -124,24 +124,195 @@ struct Args {
     emit_events: Option<PathBuf>,
 }
 
-fn main() -> Result<()> {
-    // Setup logging
+fn initialize_logging() {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
+}
 
+fn generate_completions(shell: Shell) {
+    clap_complete::generate(
+        shell,
+        &mut Args::command(),
+        "flintmc",
+        &mut std::io::stdout(),
+    );
+}
+
+fn create_test_loader(args: &Args) -> Result<TestLoader> {
+    match args.path.as_deref() {
+        Some(path) => {
+            if args.verbose {
+                println!("{} Loading tests from {}...", "→".blue(), path.display());
+            }
+            TestLoader::new(path, args.recursive).with_context(|| {
+                format!(
+                    "Failed to initialize test loader for path: {}",
+                    path.display()
+                )
+            })
+        }
+        None => {
+            let path = Path::new("FlintBenchmark/tests");
+            TestLoader::new(path, true).with_context(|| {
+                format!(
+                    "Failed to initialize test loader for default path: {}",
+                    path.display()
+                )
+            })
+        }
+    }
+}
+
+fn collect_test_files(args: &Args, loader: &TestLoader) -> Result<Vec<PathBuf>> {
+    if args.tags.is_empty() {
+        loader
+            .collect_all_test_files()
+            .context("Failed to collect test files")
+    } else {
+        if args.verbose {
+            println!("{} Filtering by tags: {:?}", "→".blue(), args.tags);
+        }
+        Ok(loader.collect_by_tags(&args.tags))
+    }
+}
+
+fn require_discovered_tests(args: &Args, test_files: &[PathBuf], interactive: bool) -> Result<()> {
+    if !test_files.is_empty() || interactive {
+        return Ok(());
+    }
+    let location = if !args.tags.is_empty() {
+        format!("with tags: {:?}", args.tags)
+    } else if let Some(path) = args.path.as_ref() {
+        format!("at: {}", path.display())
+    } else {
+        "at default path: FlintBenchmark/tests".to_string()
+    };
+    anyhow::bail!("No test files found {location}")
+}
+
+fn print_test_list(test_files: &[PathBuf]) {
+    for test_file in test_files {
+        match TestSpec::from_file(test_file, false) {
+            Ok(test) => println!("{}", test.name),
+            Err(error) => eprintln!(
+                "{} Failed to load test {}: {}",
+                "Error:".red().bold(),
+                test_file.display(),
+                error
+            ),
+        }
+    }
+}
+
+fn print_dry_run(test_files: &[PathBuf]) {
+    let chunks: Vec<_> = test_files.chunks(CHUNK_SIZE).collect();
+    println!(
+        "{} tests, {} {} (up to {} tests per batch)\n",
+        format_number(test_files.len()),
+        chunks.len(),
+        if chunks.len() == 1 {
+            "batch"
+        } else {
+            "batches"
+        },
+        CHUNK_SIZE
+    );
+    for (chunk_idx, chunk) in chunks.iter().enumerate() {
+        if chunks.len() > 1 {
+            println!(
+                "Batch {}/{} ({} tests)",
+                chunk_idx + 1,
+                chunks.len(),
+                chunk.len()
+            );
+        }
+        for test_file in *chunk {
+            match TestSpec::from_file(test_file, false) {
+                Ok(test) => {
+                    let offset =
+                        calculate_test_offsets_for_batch_default(std::slice::from_ref(&test))[0];
+                    let assertions = test
+                        .timeline
+                        .iter()
+                        .filter(|entry| matches!(entry.action_type, ActionType::Assert { .. }))
+                        .count();
+                    let tags = if test.tags.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" [{}]", test.tags.join(", "))
+                    };
+                    println!(
+                        "  {} ({}t, {}a, offset [{},{},{}]){}",
+                        test.name,
+                        test.max_tick(),
+                        assertions,
+                        offset[0],
+                        offset[1],
+                        offset[2],
+                        tags.dimmed()
+                    );
+                }
+                Err(error) => eprintln!(
+                    "{} Failed to load test {}: {}",
+                    "Error:".red().bold(),
+                    test_file.display(),
+                    error
+                ),
+            }
+        }
+    }
+}
+
+fn configured_executor(
+    args: &Args,
+    test_count: usize,
+    interactive: bool,
+) -> Result<executor::TestExecutor> {
+    let mut executor = executor::TestExecutor::new();
+    executor.set_verbose(args.verbose);
+    executor.set_quiet(args.quiet || !matches!(args.format, OutputFormat::Pretty));
+    executor.set_fail_fast(args.fail_fast);
+    executor.set_enable_breakpoints(interactive);
+    if let Some(path) = args.emit_events.clone() {
+        if test_count != 1 {
+            anyhow::bail!("--emit-events requires exactly one test file (got {test_count})");
+        }
+        executor.set_events_path(path);
+    }
+    Ok(executor)
+}
+
+fn run_interactive_mode(
+    args: &Args,
+    server: &str,
+    executor: &mut executor::TestExecutor,
+    loader: &mut TestLoader,
+) -> Result<()> {
+    println!(
+        "{} Interactive mode enabled - listening for chat commands",
+        "→".yellow().bold()
+    );
+    println!("  Commands: !search, !run, !run-all, !run-tags, !list, !reload, !help, !stop");
+    println!("  During tests: type 's' to step, 'c' to continue\n");
+    println!("{} Connecting to {}...", "→".blue(), server);
+    executor.connect(server)?;
+    println!("{} Connected successfully\n", "✓".green());
+    if let Some(record_name) = args.record.as_deref() {
+        executor.start_recording(record_name, loader, None)?;
+    }
+    executor.interactive_mode(loader)
+}
+
+fn main() -> Result<()> {
+    initialize_logging();
     let args = Args::parse();
 
     if let Some(shell) = args.completions {
-        clap_complete::generate(
-            shell,
-            &mut Args::command(),
-            "flintmc",
-            &mut std::io::stdout(),
-        );
+        generate_completions(shell);
         return Ok(());
     }
 
@@ -152,186 +323,34 @@ fn main() -> Result<()> {
         println!();
     }
 
-    let mut test_loader = if let Some(ref path) = args.path {
-        if verbose {
-            println!("{} Loading tests from {}...", "→".blue(), path.display());
-        }
-        TestLoader::new(path, args.recursive).with_context(|| {
-            format!(
-                "Failed to initialize test loader for path: {}",
-                path.display()
-            )
-        })?
-    } else {
-        let default_path = Path::new("FlintBenchmark/tests");
-        TestLoader::new(default_path, true).with_context(|| {
-            format!(
-                "Failed to initialize test loader for default path: {}",
-                default_path.display()
-            )
-        })?
-    };
-
-    // Collect test files - use tags if provided, otherwise collect all
-    let test_files = if !args.tags.is_empty() {
-        if verbose {
-            println!("{} Filtering by tags: {:?}", "→".blue(), args.tags);
-        }
-        test_loader.collect_by_tags(&args.tags)
-    } else {
-        test_loader
-            .collect_all_test_files()
-            .context("Failed to collect test files")?
-    };
-
+    let mut test_loader = create_test_loader(&args)?;
+    let test_files = collect_test_files(&args, &test_loader)?;
     let interactive_mode = args.interactive || args.record.is_some();
-
-    // In interactive/recording mode, we don't require tests to be found initially
-    if test_files.is_empty() && !interactive_mode {
-        let location = if !args.tags.is_empty() {
-            format!("with tags: {:?}", args.tags)
-        } else if let Some(ref path) = args.path {
-            format!("at: {}", path.display())
-        } else {
-            "at default path: FlintBenchmark/tests".to_string()
-        };
-        eprintln!("{} No test files found {}", "Error:".red().bold(), location);
-        std::process::exit(1);
-    }
+    require_discovered_tests(&args, &test_files, interactive_mode)?;
 
     if verbose && !interactive_mode {
         println!("Found {} test file(s)\n", test_files.len());
     }
 
-    // --list: print test names and exit
     if args.list {
-        for test_file in &test_files {
-            match TestSpec::from_file(test_file, false) {
-                Ok(test) => println!("{}", test.name),
-                Err(e) => {
-                    eprintln!(
-                        "{} Failed to load test {}: {}",
-                        "Error:".red().bold(),
-                        test_file.display(),
-                        e
-                    );
-                }
-            }
-        }
+        print_test_list(&test_files);
         return Ok(());
     }
 
-    // --dry-run: show execution plan and exit
     if args.dry_run {
-        let chunks: Vec<_> = test_files.chunks(CHUNK_SIZE).collect();
-        let n = chunks.len();
-        println!(
-            "{} tests, {} {} (up to {} tests per batch)",
-            format_number(test_files.len()),
-            n,
-            if n == 1 { "batch" } else { "batches" },
-            CHUNK_SIZE
-        );
-        println!();
-
-        for (chunk_idx, chunk) in chunks.iter().enumerate() {
-            if chunks.len() > 1 {
-                println!(
-                    "Batch {}/{} ({} tests)",
-                    chunk_idx + 1,
-                    chunks.len(),
-                    chunk.len()
-                );
-            }
-            for test_file in chunk.iter() {
-                match TestSpec::from_file(test_file, false) {
-                    Ok(test) => {
-                        let offset =
-                            calculate_test_offsets_for_batch_default(std::slice::from_ref(&test))
-                                [0];
-                        let max_tick = test.max_tick();
-                        let assertions = test
-                            .timeline
-                            .iter()
-                            .filter(|e| matches!(e.action_type, ActionType::Assert { .. }))
-                            .count();
-                        let tags = if test.tags.is_empty() {
-                            String::new()
-                        } else {
-                            format!(" [{}]", test.tags.join(", "))
-                        };
-                        println!(
-                            "  {} ({}t, {}a, offset [{},{},{}]){}",
-                            test.name,
-                            max_tick,
-                            assertions,
-                            offset[0],
-                            offset[1],
-                            offset[2],
-                            tags.dimmed()
-                        );
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "{} Failed to load test {}: {}",
-                            "Error:".red().bold(),
-                            test_file.display(),
-                            e
-                        );
-                    }
-                }
-            }
-        }
+        print_dry_run(&test_files);
         return Ok(());
     }
 
-    // Require --server for execution modes
-    let server = args.server.as_deref().unwrap_or_else(|| {
-        eprintln!(
-            "{} --server is required when running tests",
-            "Error:".red().bold()
-        );
-        std::process::exit(1);
-    });
-
-    // Connect to server
-    let mut executor = executor::TestExecutor::new();
-
-    executor.set_verbose(args.verbose);
-    executor.set_quiet(args.quiet || !matches!(args.format, OutputFormat::Pretty));
-    executor.set_fail_fast(args.fail_fast);
-    executor.set_enable_breakpoints(interactive_mode);
-    if let Some(events_path) = args.emit_events.clone() {
-        if test_files.len() != 1 {
-            eprintln!(
-                "{} --emit-events requires exactly one test file (got {})",
-                "Error:".red().bold(),
-                test_files.len()
-            );
-            std::process::exit(1);
-        }
-        executor.set_events_path(events_path);
-    }
+    let server = args
+        .server
+        .as_deref()
+        .context("--server is required when running tests")?;
+    let mut executor = configured_executor(&args, test_files.len(), interactive_mode)?;
 
     // Interactive mode: enter command loop
     if interactive_mode {
-        println!(
-            "{} Interactive mode enabled - listening for chat commands",
-            "→".yellow().bold()
-        );
-        println!("  Commands: !search, !run, !run-all, !run-tags, !list, !reload, !help, !stop");
-        println!("  During tests: type 's' to step, 'c' to continue\n");
-
-        println!("{} Connecting to {}...", "→".blue(), server);
-        executor.connect(server)?;
-        println!("{} Connected successfully\n", "✓".green());
-
-        if let Some(record_name) = args.record.as_deref() {
-            executor.start_recording(record_name, &test_loader, None)?;
-        }
-
-        executor.interactive_mode(&mut test_loader)?;
-        return Ok(());
+        return run_interactive_mode(&args, server, &mut executor, &mut test_loader);
     }
 
     if verbose {
@@ -401,7 +420,11 @@ fn main() -> Result<()> {
             }
         }
 
-        let sim_batches = split_tests_by_simulation_distance(chunk_specs, effective_chunk_distance);
+        let config_batches = group_tests_by_world_config(chunk_specs);
+        let sim_batches: Vec<_> = config_batches
+            .into_iter()
+            .flat_map(|tests| split_tests_by_simulation_distance(tests, effective_chunk_distance))
+            .collect();
 
         if verbose && sim_batches.len() > 1 {
             println!(
@@ -501,7 +524,7 @@ fn main() -> Result<()> {
                         spec.clone(),
                         Some(path.clone()),
                         vec![failure.clone()],
-                        failure.tick,
+                        failure.tick(),
                     );
                     let base_url = std::env::var("FLINT_VIZ_URL")
                         .unwrap_or_else(|_| "https://flinttestmc.github.io/FlintViz/#".to_string());
