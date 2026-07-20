@@ -221,7 +221,7 @@ The recorder lets you create tests by performing actions in-game. The bot watche
    flintmc -s localhost:25565 -i
    ```
 
-2. Begin recording:
+2. Begin recording with the existing chat command:
    ```
    !record redstone/my_test
    ```
@@ -234,7 +234,13 @@ The recorder lets you create tests by performing actions in-game. The bot watche
 
 3. Place and break blocks in-game. The bot scans for changes in a fixed 10-block radius around the position where recording started.
 
-4. When ready to advance a tick:
+4. Use the recorder dialog to advance a tick, record a use, convert changes to
+   assertions, assert the block under the player's crosshair, set a region
+   corner from that block, save, or cancel. The dialog refreshes after each
+   action to show the current tick and recorded action count. Coordinate-specific
+   chat commands remain available through `!assert` and `!pos1`.
+
+   The equivalent chat command for advancing a tick is:
    ```
    !tick
    ```
@@ -273,6 +279,7 @@ The recorder lets you create tests by performing actions in-game. The bot watche
 | Command | Description |
 |---------|-------------|
 | `!record <name> [player]` | Start recording. Optional player name for position tracking |
+| `!recorder` | Reopen the recorder dialog without changing recording state |
 | `!tick` / `!next` | Snapshot changes and advance one game tick |
 | `!assert <x> <y> <z>` | Assert the block at the given coordinates |
 | `!use [item]` | Record `tp` to the tracked player's current pose, then `interact` |
