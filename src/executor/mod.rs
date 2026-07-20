@@ -3,6 +3,7 @@
 mod actions;
 pub mod adapter;
 mod block;
+mod commands;
 mod events;
 mod handlers;
 mod recorder;
@@ -166,161 +167,63 @@ impl TestExecutor {
             "say Type: help, search, run, run-all, run-tags, list, reload, stop (prefix with !)",
         )?;
 
+        // A recording started from the CLI opens its controls immediately.
+        // Normal interactive mode keeps its existing chat interface unchanged.
+        if self.recorder.is_some() {
+            self.show_recorder_dialog()?;
+        }
+
         // Drain any messages
         tick::drain_chat_messages(&mut self.bot);
 
         // Collect all tests upfront
         let mut all_test_files = test_loader.collect_all_test_files()?;
+        let mut next_recorder_ui_poll = std::time::Instant::now();
+        let mut last_recorder_ui_action = None::<std::time::Instant>;
 
         loop {
+            if self.recorder.is_some() && std::time::Instant::now() >= next_recorder_ui_poll {
+                self.poll_recorder_dialog_action()?;
+                next_recorder_ui_poll =
+                    std::time::Instant::now() + std::time::Duration::from_millis(500);
+            }
             // Poll for chat messages
             if let Some((sender, message)) = self
                 .bot
                 .recv_chat_timeout(std::time::Duration::from_millis(tick::CHAT_POLL_TIMEOUT_MS))
             {
+                if handlers::is_bot_sender(sender.as_deref()) {
+                    continue;
+                }
                 let Some((command, args)) = handlers::parse_command(&message) else {
                     continue;
                 };
+                let is_recorder_ui_action = message.contains("__flintmc_recorder_");
+                if is_recorder_ui_action {
+                    let now = std::time::Instant::now();
+                    if last_recorder_ui_action
+                        .is_some_and(|previous| now.duration_since(previous).as_millis() < 750)
+                    {
+                        continue;
+                    }
+                    last_recorder_ui_action = Some(now);
+                    self.consume_recorder_dialog_action(sender.as_deref())?;
+                }
 
                 match command.as_str() {
-                    "!help" => {
-                        self.handle_help()?;
-                    }
-
-                    "!list" => {
-                        self.handle_list(&all_test_files)?;
-                    }
-
-                    "!search" => {
-                        if args.is_empty() {
-                            self.bot.send_command("say Usage: !search <pattern>")?;
-                            continue;
+                    _ if commands::from_chat(&command).is_some() => {
+                        let flint_command = commands::from_chat(&command).expect("guarded command");
+                        let mut context = commands::FlintCommandContext {
+                            args: &args,
+                            sender: sender.clone(),
+                            test_loader,
+                            all_test_files: &mut all_test_files,
+                            exit_interactive: false,
+                        };
+                        commands::dispatch(self, flint_command, &mut context)?;
+                        if context.exit_interactive {
+                            return Ok(());
                         }
-                        let pattern = args.join(" ");
-                        self.handle_search(&all_test_files, &pattern)?;
-                    }
-
-                    "!run" => {
-                        if args.is_empty() {
-                            self.bot
-                                .send_command("say Usage: !run <test_name> [step]")?;
-                            continue;
-                        }
-
-                        // Check for step flag
-                        let (test_name, step_mode) =
-                            if args.last().map(|s| s.as_str()) == Some("step") && args.len() > 1 {
-                                (args[..args.len() - 1].join(" "), true)
-                            } else {
-                                (args.join(" "), false)
-                            };
-
-                        self.handle_run(&all_test_files, &test_name, step_mode)?;
-                    }
-
-                    "!run-all" => {
-                        self.handle_run_all(&all_test_files)?;
-                    }
-
-                    "!run-tags" => {
-                        if args.is_empty() {
-                            self.bot
-                                .send_command("say Usage: !run-tags <tag1,tag2,...>")?;
-                            continue;
-                        }
-                        let tags: Vec<String> =
-                            args[0].split(',').map(|s| s.trim().to_string()).collect();
-                        self.handle_run_tags(test_loader, &tags)?;
-                    }
-
-                    "!stop" => {
-                        self.bot
-                            .send_command("say Exiting interactive mode. Goodbye!")?;
-                        return Ok(());
-                    }
-
-                    "!reload" => {
-                        test_loader.verify_and_rebuild_index()?;
-                        all_test_files = test_loader.collect_all_test_files()?;
-                        self.bot.send_command(&format!(
-                            "say Reloaded {} tests",
-                            all_test_files.len()
-                        ))?;
-                    }
-
-                    // Recorder commands
-                    "!record" => {
-                        if args.is_empty() {
-                            self.bot
-                                .send_command("say Usage: !record <test_name> [player_name]")?;
-                            self.bot.send_command(
-                                "say Example: !record my_test or !record fence/fence_connect",
-                            )?;
-                            continue;
-                        }
-                        let test_name = args[0].clone();
-                        let player_name = args.get(1).cloned().or_else(|| sender.clone());
-                        self.handle_record_start(&test_name, test_loader, player_name)?;
-                    }
-                    "!assert_changes" => {
-                        self.handle_record_assert_changes()?;
-                    }
-
-                    "!use" => {
-                        self.handle_record_use(&args)?;
-                    }
-
-                    "!tick" | "!next" => {
-                        self.handle_record_tick()?;
-                    }
-
-                    "!pos1" | "!pos" => {
-                        if (!args.is_empty() && args.len() < 3) || args.len() > 3 {
-                            self.bot.send_command("say Usage: !assert <x> <y> <z>")?;
-                            continue;
-                        }
-                        self.handle_pos1(&args);
-                    }
-
-                    "!assert" => {
-                        if args.len() < 3 {
-                            self.bot.send_command("say Usage: !assert <x> <y> <z>")?;
-                            continue;
-                        }
-                        self.last_assert_pos = args.clone();
-                        self.handle_record_assert(&args)?;
-                    }
-                    "!sprint" => {
-                        if args.len() != 1 {
-                            self.bot.send_command("say Usage: !sprint <ticks>")?;
-                            self.bot.send_command(
-                                "say: please be assert before a start state of a block/region",
-                            )?;
-                            continue;
-                        }
-                        let ticks = args[0].parse::<u32>().unwrap_or(1);
-                        if ticks == 0 {
-                            self.bot
-                                .send_command("say Sprint ticks must be greater than 0")?;
-                            continue;
-                        }
-                        if self.last_assert_pos.is_empty() {
-                            self.bot.send_command("say Please assert a position first, which should be used for each string (can be also a 3d area)")?;
-                            continue;
-                        }
-                        self.handle_record_sprint(ticks)?;
-                    }
-
-                    "!save" => {
-                        if self.handle_record_save()? {
-                            // Reload tests after successful save
-                            test_loader.verify_and_rebuild_index()?;
-                            all_test_files = test_loader.collect_all_test_files()?;
-                        }
-                    }
-
-                    "!cancel" => {
-                        self.handle_record_cancel()?;
                     }
 
                     _ => {
@@ -331,6 +234,12 @@ impl TestExecutor {
                             ))?;
                         }
                     }
+                }
+
+                // Dialog actions enter through chat like their command equivalents.
+                // Replace the waiting screen with current recorder state after each action.
+                if self.recorder.is_some() {
+                    self.show_recorder_dialog()?;
                 }
             }
         }
@@ -405,10 +314,6 @@ impl TestExecutor {
 
     fn configure_batch_world(&mut self, first: &TestSpec) -> Result<()> {
         self.bot.send_command_synced("tick freeze")?;
-        let game_time = adapter::query_gametime(&self.bot)?;
-        for _ in 0..(20 - game_time % 20) % 20 {
-            tick::step_tick(&mut self.bot, false)?;
-        }
 
         let world_config = first.world_config();
         let mut gamerules: Vec<_> = world_config.gamerules.iter().collect();

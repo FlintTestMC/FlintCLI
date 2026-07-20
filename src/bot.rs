@@ -179,16 +179,11 @@ impl TestBot {
                             tracing::info!("Bot world spawned");
                         }
                         Event::Chat(m) => {
-                            // Extract the message content
-                            let message = m.message().to_string();
-                            // Try to get sender name (best effort)
-                            // Fallback: parse "<Name>"
-                            let sender = if message.starts_with('<') {
-                                message.find('>').map(|end| message[1..end].to_string())
-                            } else {
-                                None
-                            };
-
+                            // Use Azalea's structured chat parsing. Rendering the full
+                            // component and looking for `<Name>` loses the sender on
+                            // modern chat types, which made recorder dialogs fall back
+                            // to @p and target the FlintMC bot itself.
+                            let (sender, message) = m.split_sender_and_content();
                             if message.contains("__flintmc_ack_") {
                                 if let Some(tx) = &state.ack_tx {
                                     let _ = tx.send(message);
@@ -395,14 +390,16 @@ impl TestBot {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Bot not initialized"))?;
 
-        // Add "/" prefix if not present
-        let command_with_slash = if command.starts_with('/') {
-            command.to_string()
-        } else {
-            format!("/{}", command)
-        };
-        tracing::debug!("Sending command: {}", command_with_slash);
-        client.chat(&command_with_slash);
+        let command = command.strip_prefix('/').unwrap_or(command);
+        tracing::debug!("Sending command: /{}", command);
+        // Client::chat truncates both chat and commands to 256 characters.
+        // Inline Minecraft dialogs regularly exceed that, so send the command
+        // packet directly; the protocol supports the full command string.
+        client.write_packet(
+            azalea::protocol::packets::game::s_chat_command::ServerboundChatCommand {
+                command: command.to_string(),
+            },
+        );
         Ok(())
     }
 

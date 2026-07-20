@@ -377,10 +377,6 @@ pub(crate) fn query_daytime(bot: &TestBot) -> Result<u64> {
     query_time_command(bot, "time query minecraft:day", "daytime").map(|time| time % 24_000)
 }
 
-pub(crate) fn query_gametime(bot: &TestBot) -> Result<u64> {
-    query_time_command(bot, "time query gametime", "game time")
-}
-
 fn query_time_command(bot: &TestBot, command: &str, label: &str) -> Result<u64> {
     let _query_guard = bot.lock_command_query();
     drain_chat(bot);

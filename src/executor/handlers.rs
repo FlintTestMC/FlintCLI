@@ -6,8 +6,39 @@ use flint_core::spatial::pair_tests_with_offsets;
 use flint_core::test_spec::TestSpec;
 use std::path::PathBuf;
 
-use super::{DEFAULT_TESTS_DIR, TestExecutor, block, recorder, tick};
+use super::{DEFAULT_TESTS_DIR, TestExecutor, block, commands, recorder, tick};
 use crate::spatial_batch::group_tests_by_world_config;
+
+fn command_action(label: &str, command: &str) -> serde_json::Value {
+    serde_json::json!({
+        "label": label,
+        "action": { "type": "run_command", "command": command }
+    })
+}
+
+fn ui_action(spec: &commands::FlintCommandSpec) -> serde_json::Value {
+    let dialog = spec.dialog.expect("dialog action spec");
+    command_action(
+        dialog.label,
+        &format!("trigger flintmc_recorder set {}", dialog.trigger),
+    )
+}
+
+fn recorder_dialog(test_name: &str, tick: u32, action_count: usize) -> serde_json::Value {
+    let actions: Vec<_> = commands::COMMANDS
+        .iter()
+        .filter(|spec| spec.scope == commands::CommandScope::Recorder && spec.dialog.is_some())
+        .map(ui_action)
+        .collect();
+    serde_json::json!({
+        "type": "minecraft:multi_action",
+        "title": format!("FlintMC Recorder: {test_name} ({tick}/{action_count})"),
+        "columns": 2,
+        "actions": actions,
+        "pause": false,
+        "after_action": "wait_for_response"
+    })
+}
 
 /// Parse command parts from a chat message
 /// Returns (command, args) if a valid command was found
@@ -18,6 +49,14 @@ pub fn parse_command(message: &str) -> Option<(String, Vec<String>)> {
     }
 
     let msg_lower = message.to_lowercase();
+
+    if let Some(action) = msg_lower
+        .split_whitespace()
+        .find_map(|part| part.strip_prefix("__flintmc_recorder_"))
+    {
+        let command = commands::from_callback(action)?;
+        return Some((commands::primary_alias(command).to_string(), Vec::new()));
+    }
 
     // Extract command from message (look for !command pattern)
     let cmd_start = msg_lower.find('!')?;
@@ -32,6 +71,10 @@ pub fn parse_command(message: &str) -> Option<(String, Vec<String>)> {
     let args: Vec<String> = parts[1..].iter().map(|s| s.to_string()).collect();
 
     Some((command, args))
+}
+
+pub fn is_bot_sender(sender: Option<&str>) -> bool {
+    sender == Some("flintmc_testbot")
 }
 
 fn load_test_specs(test_files: &[PathBuf]) -> impl Iterator<Item = TestSpec> + '_ {
@@ -68,31 +111,82 @@ fn find_test(test_files: &[PathBuf], name: &str) -> Option<TestSpec> {
 impl TestExecutor {
     // Command handlers
 
+    pub(super) fn show_recorder_dialog(&self) -> Result<()> {
+        let Some(recorder) = self.recorder.as_ref() else {
+            return Ok(());
+        };
+        let target = recorder.player_name.as_deref().unwrap_or("@p");
+        let action_count = recorder
+            .timeline
+            .iter()
+            .map(|step| step.actions.len())
+            .sum();
+        self.bot.send_command(&format!(
+            "scoreboard players enable {target} flintmc_recorder"
+        ))?;
+        self.show_dialog(
+            target,
+            &recorder_dialog(&recorder.test_name, recorder.current_tick, action_count),
+        )
+    }
+
+    fn show_dialog(&self, target: &str, dialog: &serde_json::Value) -> Result<()> {
+        validate_entity_target(target)?;
+        self.bot
+            .send_command(&format!("dialog show {target} {dialog}"))
+    }
+
+    pub(super) fn poll_recorder_dialog_action(&self) -> Result<()> {
+        if self.recorder.is_none() {
+            return Ok(());
+        }
+        for spec in commands::COMMANDS
+            .iter()
+            .filter(|spec| spec.dialog.is_some())
+        {
+            let dialog = spec.dialog.expect("filtered dialog action");
+            let action = commands::callback_id(spec.command);
+            self.bot.send_command(&format!(
+                "execute as @a[scores={{flintmc_recorder={}}}] run tell flintmc_testbot __flintmc_recorder_{action}",
+                dialog.trigger
+            ))?;
+        }
+        self.bot.send_command(
+            "scoreboard players reset @a[scores={flintmc_recorder=1..}] flintmc_recorder",
+        )?;
+        Ok(())
+    }
+
+    pub(super) fn consume_recorder_dialog_action(&self, sender: Option<&str>) -> Result<()> {
+        let target = sender
+            .or_else(|| {
+                self.recorder
+                    .as_ref()
+                    .and_then(|recorder| recorder.player_name.as_deref())
+            })
+            .unwrap_or("@a[name=!flintmc_testbot,limit=1,sort=nearest]");
+        validate_entity_target(target)?;
+        // Reset before the handler refreshes and re-enables the trigger. This
+        // makes a button click one-shot even if multiple poll responses arrive.
+        self.bot.send_command(&format!(
+            "scoreboard players reset {target} flintmc_recorder"
+        ))
+    }
+
     pub(super) fn handle_help(&mut self) -> Result<()> {
         self.bot.send_command("say Commands:")?;
-        self.bot
-            .send_command("say !search <pattern> - Search tests by name")?;
-        self.bot
-            .send_command("say !run <test_name> [step] - Run a specific test")?;
-        self.bot.send_command("say !run-all - Run all tests")?;
-        self.bot
-            .send_command("say !run-tags <tag1,tag2> - Run tests with tags")?;
-        self.bot.send_command("say !list - List all tests")?;
-        self.bot.send_command("say !reload - Reload test files")?;
-        self.bot
-            .send_command("say Recorder: !record <name>, !tick/!next, !save, !cancel")?;
-        self.bot
-            .send_command("say Recorder actions: !assert <x> <y> <z>, !assert_changes")?;
-        self.bot.send_command(
-            "say Recorder actions: !use [item] - record tp + interact at player pose",
-        )?;
-        self.bot.send_command(
-            "say Recorder actions: !pos1 <x> <y> <z>, !pos - Allow to use assert for a 3d area",
-        )?;
-        self.bot.send_command(
-            "say Recorder actions: !sprint <tick> - ticks this ticks and asserts after each tick",
-        )?;
-        self.bot.send_command("say !stop - Exit interactive mode")?;
+        let active_scope = if self.recorder.is_some() {
+            commands::CommandScope::Recorder
+        } else {
+            commands::CommandScope::Main
+        };
+        for help in commands::COMMANDS
+            .iter()
+            .filter(|spec| spec.scope == active_scope)
+            .filter_map(|spec| spec.help)
+        {
+            self.bot.send_command(&format!("say {help}"))?;
+        }
         Ok(())
     }
 
@@ -231,8 +325,10 @@ impl TestExecutor {
 
         let tests_root = std::path::Path::new(DEFAULT_TESTS_DIR);
         let mut recorder_state = recorder::RecorderState::new(test_name, tests_root);
-        // Default to @p if nothing works
-        recorder_state.player_name = player_name.or_else(|| Some("@p".to_string()));
+        // Never let the fallback select FlintMC itself: @p is relative to the
+        // command source and therefore commonly resolves to the bot.
+        recorder_state.player_name = player_name
+            .or_else(|| Some("@a[name=!flintmc_testbot,limit=1,sort=nearest]".to_string()));
 
         // Get tracked player position to set scan center.
         let scan_center = match self.query_record_player_pose(&recorder_state) {
@@ -258,15 +354,17 @@ impl TestExecutor {
 
         self.recorder = Some(recorder_state);
 
+        // Dialog buttons communicate through a trigger objective, avoiding the
+        // confirmation screen Minecraft shows for chat-sending click actions.
+        self.bot
+            .send_command("scoreboard objectives add flintmc_recorder trigger")?;
+
         // Freeze time for controlled recording
         self.bot.send_command_synced("tick freeze")?;
 
-        self.bot
-            .send_command(&format!("say Recording started: {}", test_name))?;
-        self.bot
-            .send_command("say Time frozen. Block changes will be detected automatically!")?;
-        self.bot
-            .send_command("say Commands: !assert, !use, !tick, !save, !cancel")?;
+        self.bot.send_command(
+            "tellraw @a[name=!flintmc_testbot] {\"text\":\"Recorder: press Esc to close the controls and move/build. Recording stays active; type !recorder to reopen the controls without advancing.\",\"color\":\"yellow\"}",
+        )?;
 
         Ok(())
     }
@@ -279,8 +377,6 @@ impl TestExecutor {
             return Ok(());
         }
 
-        let current_tick = self.recorder.as_ref().unwrap().current_tick;
-
         // Snapshot before advancing tick to capture all changes
         self.handle_record_snapshot()?;
 
@@ -290,12 +386,6 @@ impl TestExecutor {
         // Now advance our recording tick counter
         let recorder = self.require_recorder().unwrap();
         recorder.next_tick();
-        let new_tick = recorder.current_tick;
-
-        self.bot.send_command(&format!(
-            "say Stepped game tick, now recording tick {} (was {})",
-            new_tick, current_tick
-        ))?;
 
         Ok(())
     }
@@ -351,11 +441,6 @@ impl TestExecutor {
                 let block_id = block::extract_block_id(&block_str);
                 let recorder = self.recorder.as_mut().unwrap();
                 recorder.add_assertion(pos, &block_id);
-
-                self.bot.send_command(&format!(
-                    "say Added assert at [{}, {}, {}] = {}",
-                    pos[0], pos[1], pos[2], block_id
-                ))?;
             } else {
                 self.bot.send_command(&format!(
                     "say No block found at [{}, {}, {}]",
@@ -366,6 +451,37 @@ impl TestExecutor {
         Ok(())
     }
 
+    pub(super) fn handle_record_assert_target(&mut self) -> Result<()> {
+        let Some(pos) = self.looked_at_record_block()? else {
+            self.bot
+                .send_command("say Recorder: no block in sight within 6 blocks.")?;
+            return Ok(());
+        };
+        let args = pos.map(|coordinate| coordinate.to_string()).to_vec();
+        self.last_assert_pos = args.clone();
+        self.handle_record_assert(&args)
+    }
+
+    pub(super) fn handle_record_pos1_target(&mut self) -> Result<()> {
+        let Some(pos) = self.looked_at_record_block()? else {
+            self.bot
+                .send_command("say Recorder: no block in sight within 6 blocks.")?;
+            return Ok(());
+        };
+        self.pos1 = Some(pos);
+        Ok(())
+    }
+
+    pub(super) fn handle_record_sprint_target(&mut self) -> Result<()> {
+        let Some(pos) = self.looked_at_record_block()? else {
+            self.bot
+                .send_command("say Recorder: no block in sight within 6 blocks.")?;
+            return Ok(());
+        };
+        self.last_assert_pos = pos.map(|coordinate| coordinate.to_string()).to_vec();
+        self.handle_record_sprint(1)
+    }
+
     pub(super) fn handle_record_assert_changes(&mut self) -> Result<()> {
         let Some(recorder) = self.require_recorder() else {
             self.bot.send_command("say No recording in progress.")?;
@@ -373,10 +489,7 @@ impl TestExecutor {
         };
 
         let count = recorder.convert_actions_to_asserts();
-        self.bot.send_command(&format!(
-            "say Converted {} actions to assertions for this tick.",
-            count
-        ))?;
+        let _ = count;
         Ok(())
     }
 
@@ -403,17 +516,6 @@ impl TestExecutor {
         let recorder = self.recorder.as_mut().unwrap();
         recorder.record_use(pos, Some(rot), item.clone());
 
-        self.bot.send_command(&format!(
-            "say Recorded use at [{:.2}, {:.2}, {:.2}] rot [{:.1}, {:.1}]{}",
-            pos[0],
-            pos[1],
-            pos[2],
-            rot[0],
-            rot[1],
-            item.as_ref()
-                .map(|item| format!(" with {item}"))
-                .unwrap_or_default()
-        ))?;
         Ok(())
     }
 
@@ -471,8 +573,6 @@ impl TestExecutor {
         let scan_radius = recorder.scan_radius;
         let scan_center = recorder.scan_center.unwrap_or([0, 64, 0]);
 
-        self.bot.send_command("say Scanning for block changes...")?;
-
         // Scan current blocks
         let current_blocks = self.scan_blocks_around(scan_center, scan_radius)?;
 
@@ -518,8 +618,7 @@ impl TestExecutor {
             }
         }
 
-        self.bot
-            .send_command(&format!("say Found {} block changes", changes))?;
+        let _ = changes;
         Ok(())
     }
 
@@ -546,10 +645,49 @@ impl TestExecutor {
         &self,
         recorder: &recorder::RecorderState,
     ) -> Result<([f64; 3], [f32; 2])> {
-        let target = recorder.player_name.as_deref().unwrap_or("@p");
+        let target = recorder
+            .player_name
+            .as_deref()
+            .unwrap_or("@a[name=!flintmc_testbot,limit=1,sort=nearest]");
         let pos = self.query_entity_vec3(target, "Pos")?;
         let rot = self.query_entity_vec2_f32(target, "Rotation")?;
         Ok((pos, rot))
+    }
+
+    fn looked_at_record_block(&self) -> Result<Option<[i32; 3]>> {
+        let Some(recorder) = self.recorder.as_ref() else {
+            return Ok(None);
+        };
+        let (feet, rot) = self.query_record_player_pose(recorder)?;
+        let yaw = (rot[0] as f64).to_radians();
+        let pitch = (rot[1] as f64).to_radians();
+        let direction = [
+            -yaw.sin() * pitch.cos(),
+            -pitch.sin(),
+            yaw.cos() * pitch.cos(),
+        ];
+        let eye = [feet[0], feet[1] + 1.62, feet[2]];
+        let mut previous = None;
+        for step in 1..=120 {
+            let distance = step as f64 * 0.05;
+            let pos = [
+                (eye[0] + direction[0] * distance).floor() as i32,
+                (eye[1] + direction[1] * distance).floor() as i32,
+                (eye[2] + direction[2] * distance).floor() as i32,
+            ];
+            if previous == Some(pos) {
+                continue;
+            }
+            previous = Some(pos);
+            if let Some(block) = self.bot.get_block(pos)?
+                && !block::extract_block_id(&block)
+                    .to_lowercase()
+                    .contains("air")
+            {
+                return Ok(Some(pos));
+            }
+        }
+        Ok(None)
     }
 
     fn query_entity_vec3(&self, target: &str, path: &str) -> Result<[f64; 3]> {
@@ -632,4 +770,24 @@ fn parse_numbers_after_colon(message: &str) -> Vec<f64> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_bot_sender, parse_command};
+
+    #[test]
+    fn recorder_dialog_callback_maps_to_existing_command() {
+        assert_eq!(
+            parse_command("__flintmc_recorder_assert_changes"),
+            Some(("!assert_changes".to_string(), vec![]))
+        );
+    }
+
+    #[test]
+    fn identifies_bot_as_command_sender() {
+        assert!(is_bot_sender(Some("flintmc_testbot")));
+        assert!(!is_bot_sender(Some("Coco9486")));
+        assert!(!is_bot_sender(None));
+    }
 }
