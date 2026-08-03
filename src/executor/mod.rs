@@ -3,7 +3,7 @@
 mod actions;
 pub mod adapter;
 mod block;
-mod commands;
+pub(crate) mod commands;
 mod events;
 mod handlers;
 mod parsing;
@@ -162,12 +162,12 @@ impl TestExecutor {
         // Interactive mode always uses verbose output
         self.verbose = true;
 
-        // Send help message to chat (without ! to avoid self-triggering)
+        // Omit ! in bot-authored chat so the hint cannot trigger command parsing.
         self.bot
             .send_command_synced("say FlintMC Interactive Mode active")?;
-        self.bot.send_command_synced(
-            "say Type: help, search, run, run-all, run-tags, list, reload, stop (prefix with !)",
-        )?;
+        let command_hint = commands::command_aliases(commands::CommandScope::Main, false);
+        self.bot
+            .send_command_synced(&format!("say Type: {command_hint} (prefix with !)"))?;
 
         // A recording started from the CLI opens its controls immediately.
         // Normal interactive mode keeps its existing chat interface unchanged.

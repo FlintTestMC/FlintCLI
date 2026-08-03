@@ -81,7 +81,7 @@ struct Args {
     #[arg(short = 't', long = "tag")]
     tags: Vec<String>,
 
-    /// Interactive mode: listen for chat commands (!search, !run, !run-all, !run-tags)
+    /// Interactive mode: listen for commands from the generated chat-command registry.
     #[arg(short = 'i', long)]
     interactive: bool,
 
@@ -296,7 +296,10 @@ fn run_interactive_mode(
         "{} Interactive mode enabled - listening for chat commands",
         "→".yellow().bold()
     );
-    println!("  Commands: !search, !run, !run-all, !run-tags, !list, !reload, !help, !stop");
+    println!(
+        "  Commands: {}",
+        executor::commands::command_aliases(executor::commands::CommandScope::Main, true)
+    );
     println!("  During tests: type 's' to step, 'c' to continue\n");
     println!("{} Connecting to {}...", "→".blue(), server);
     executor.connect(server)?;

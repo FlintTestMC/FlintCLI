@@ -1,15 +1,16 @@
 //! Command handlers for interactive mode
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use flint_core::loader::TestLoader;
-use flint_core::spatial::pair_tests_with_offsets;
 use flint_core::test_spec::TestSpec;
 use std::path::PathBuf;
 
 use super::{
     DEFAULT_TESTS_DIR, TestExecutor, block, commands, parsing::numbers_after_colon, recorder, tick,
 };
-use crate::spatial_batch::group_tests_by_world_config;
+use crate::spatial_batch::{group_tests_by_world_config, pair_tests_with_offsets};
+
+const RECORDER_GUIDANCE: &str = "Recorder commands also work in chat; type !help to list them. Press Esc to close this dialog and move or build. Recording stays active; type !recorder to reopen the controls.";
 
 fn command_action(label: &str, command: &str) -> serde_json::Value {
     serde_json::json!({
@@ -35,6 +36,10 @@ fn recorder_dialog(test_name: &str, tick: u32, action_count: usize) -> serde_jso
     serde_json::json!({
         "type": "minecraft:multi_action",
         "title": format!("FlintMC Recorder: {test_name} ({tick}/{action_count})"),
+        "body": [{
+            "type": "minecraft:plain_message",
+            "contents": { "text": RECORDER_GUIDANCE, "color": "yellow" }
+        }],
         "columns": 2,
         "actions": actions,
         "pause": false,
@@ -79,10 +84,11 @@ pub fn is_bot_sender(sender: Option<&str>) -> bool {
     sender == Some("flintmc_testbot")
 }
 
-fn load_test_specs(test_files: &[PathBuf]) -> impl Iterator<Item = TestSpec> + '_ {
-    test_files
-        .iter()
-        .filter_map(|test_file| TestSpec::from_file(test_file, false).ok())
+fn load_test_specs(test_files: &[PathBuf]) -> impl Iterator<Item = Result<TestSpec>> + '_ {
+    test_files.iter().map(|test_file| {
+        TestSpec::from_file(test_file, false)
+            .with_context(|| format!("Failed to load test {}", test_file.display()))
+    })
 }
 
 fn test_label(test: &TestSpec) -> String {
@@ -93,25 +99,42 @@ fn test_label(test: &TestSpec) -> String {
     }
 }
 
-fn find_test(test_files: &[PathBuf], name: &str) -> Option<TestSpec> {
+fn find_test(test_files: &[PathBuf], name: &str) -> (Option<TestSpec>, Vec<anyhow::Error>) {
     let name = name.to_lowercase();
     let mut partial_match = None;
+    let mut errors = Vec::new();
 
     for test in load_test_specs(test_files) {
+        let test = match test {
+            Ok(test) => test,
+            Err(error) => {
+                errors.push(error);
+                continue;
+            }
+        };
         let test_name = test.name.to_lowercase();
         if test_name == name {
-            return Some(test);
+            return (Some(test), errors);
         }
         if partial_match.is_none() && test_name.contains(&name) {
             partial_match = Some(test);
         }
     }
 
-    partial_match
+    (partial_match, errors)
 }
 
 impl TestExecutor {
     // Command handlers
+
+    fn report_test_load_errors(&self, errors: &[anyhow::Error]) -> Result<()> {
+        for error in errors {
+            for line in format!("{error:#}").lines() {
+                self.bot.send_command(&format!("say Error: {line}"))?;
+            }
+        }
+        Ok(())
+    }
 
     pub(super) fn show_recorder_dialog(&self) -> Result<()> {
         let Some(recorder) = self.recorder.as_ref() else {
@@ -196,8 +219,12 @@ impl TestExecutor {
         self.bot
             .send_command(&format!("say Found {} tests:", all_test_files.len()))?;
         for test in load_test_specs(all_test_files) {
-            self.bot
-                .send_command_synced(&format!("say - {}", test_label(&test)))?;
+            match test {
+                Ok(test) => self
+                    .bot
+                    .send_command_synced(&format!("say - {}", test_label(&test)))?,
+                Err(error) => self.report_test_load_errors(&[error])?,
+            }
         }
         Ok(())
     }
@@ -210,6 +237,13 @@ impl TestExecutor {
         let pattern_lower = pattern.to_lowercase();
         let mut found = 0;
         for test in load_test_specs(all_test_files) {
+            let test = match test {
+                Ok(test) => test,
+                Err(error) => {
+                    self.report_test_load_errors(&[error])?;
+                    continue;
+                }
+            };
             if test.name.to_lowercase().contains(&pattern_lower) {
                 self.bot
                     .send_command_synced(&format!("say - {}", test_label(&test)))?;
@@ -232,7 +266,9 @@ impl TestExecutor {
         test_name: &str,
         step_mode: bool,
     ) -> Result<()> {
-        if let Some(test) = find_test(all_test_files, test_name) {
+        let (test, load_errors) = find_test(all_test_files, test_name);
+        self.report_test_load_errors(&load_errors)?;
+        if let Some(test) = test {
             if step_mode {
                 self.bot.send_command(&format!(
                     "say Running test: {} (step mode - type 's' or 'c')",
@@ -251,7 +287,7 @@ impl TestExecutor {
                 self.bot
                     .send_command(&format!("say [{}] {}", status, result.test_name))?;
             }
-        } else {
+        } else if load_errors.is_empty() {
             self.bot
                 .send_command(&format!("say Test '{}' not found", test_name))?;
         }
@@ -264,7 +300,12 @@ impl TestExecutor {
             all_test_files.len()
         ))?;
 
-        let (passed, failed) = self.run_test_groups(load_test_specs(all_test_files).collect())?;
+        let (tests, load_errors): (Vec<_>, Vec<_>) =
+            load_test_specs(all_test_files).partition(Result::is_ok);
+        let tests = tests.into_iter().filter_map(Result::ok).collect();
+        let load_errors: Vec<_> = load_errors.into_iter().filter_map(Result::err).collect();
+        self.report_test_load_errors(&load_errors)?;
+        let (passed, failed) = self.run_test_groups(tests)?;
         self.bot.send_command(&format!(
             "say Results: {} passed, {} failed",
             passed, failed
@@ -291,7 +332,12 @@ impl TestExecutor {
             tags
         ))?;
 
-        let (passed, failed) = self.run_test_groups(load_test_specs(&test_files).collect())?;
+        let (tests, load_errors): (Vec<_>, Vec<_>) =
+            load_test_specs(&test_files).partition(Result::is_ok);
+        let tests = tests.into_iter().filter_map(Result::ok).collect();
+        let load_errors: Vec<_> = load_errors.into_iter().filter_map(Result::err).collect();
+        self.report_test_load_errors(&load_errors)?;
+        let (passed, failed) = self.run_test_groups(tests)?;
         self.bot.send_command(&format!(
             "say Results: {} passed, {} failed",
             passed, failed
@@ -364,9 +410,9 @@ impl TestExecutor {
         // Freeze time for controlled recording
         self.bot.send_command_synced("tick freeze")?;
 
-        self.bot.send_command(
-            "tellraw @a[name=!flintmc_testbot] {\"text\":\"Recorder: press Esc to close the controls and move/build. Recording stays active; type !recorder to reopen the controls without advancing.\",\"color\":\"yellow\"}",
-        )?;
+        let guidance = serde_json::json!({ "text": RECORDER_GUIDANCE, "color": "yellow" });
+        self.bot
+            .send_command(&format!("tellraw @a[name=!flintmc_testbot] {guidance}"))?;
 
         Ok(())
     }
@@ -757,7 +803,7 @@ fn validate_entity_target(target: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_bot_sender, parse_command};
+    use super::{RECORDER_GUIDANCE, find_test, is_bot_sender, parse_command, recorder_dialog};
 
     #[test]
     fn recorder_dialog_callback_maps_to_existing_command() {
@@ -772,5 +818,33 @@ mod tests {
         assert!(is_bot_sender(Some("flintmc_testbot")));
         assert!(!is_bot_sender(Some("Coco9486")));
         assert!(!is_bot_sender(None));
+    }
+
+    #[test]
+    fn recorder_dialog_explains_chat_commands_and_escape() {
+        let dialog = recorder_dialog("example", 2, 3);
+        let guidance = dialog["body"][0]["contents"]["text"]
+            .as_str()
+            .expect("recorder dialog guidance");
+
+        assert_eq!(guidance, RECORDER_GUIDANCE);
+        assert!(guidance.contains("!help"));
+        assert!(guidance.contains("Esc"));
+        assert!(guidance.contains("!recorder"));
+        assert!(
+            dialog["actions"]
+                .as_array()
+                .is_some_and(|actions| !actions.is_empty())
+        );
+    }
+
+    #[test]
+    fn test_lookup_preserves_load_errors() {
+        let missing = std::path::PathBuf::from("definitely-missing-flint-test.json");
+        let (test, errors) = find_test(&[missing], "example");
+
+        assert!(test.is_none());
+        assert_eq!(errors.len(), 1);
+        assert!(format!("{:#}", errors[0]).contains("Failed to load test"));
     }
 }

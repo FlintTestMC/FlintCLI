@@ -18,6 +18,23 @@ pub struct FlintCommandContext<'a> {
 
 include!(concat!(env!("OUT_DIR"), "/flint_commands.rs"));
 
+/// Primary aliases for commands available in a given interactive-mode scope.
+pub(crate) fn command_aliases(scope: CommandScope, include_prefix: bool) -> String {
+    COMMANDS
+        .iter()
+        .filter(|spec| spec.scope == scope)
+        .filter_map(|spec| spec.aliases.first().copied())
+        .map(|alias| {
+            if include_prefix {
+                alias
+            } else {
+                alias.strip_prefix('!').unwrap_or(alias)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -63,5 +80,19 @@ mod tests {
                 assert_eq!(from_chat(alias), Some(spec.command));
             }
         }
+    }
+
+    #[test]
+    fn main_command_hint_is_derived_from_registry() {
+        let expected = COMMANDS
+            .iter()
+            .filter(|spec| spec.scope == CommandScope::Main)
+            .filter_map(|spec| spec.aliases.first().copied())
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        assert_eq!(command_aliases(CommandScope::Main, true), expected);
+        assert!(command_aliases(CommandScope::Main, true).contains("!record"));
+        assert!(!command_aliases(CommandScope::Main, true).contains("!recorder"));
     }
 }
