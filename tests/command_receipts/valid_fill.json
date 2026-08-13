@@ -1,0 +1,26 @@
+{
+    "name": "command_receipt_valid_fill",
+    "description": "A valid fill command is accepted and changes the requested block",
+    "tags": ["command_receipt", "positive_control"],
+    "dependencies": [],
+    "setup": {
+        "cleanup": {
+            "region": [[0, 100, 0], [0, 100, 0]]
+        }
+    },
+    "timeline": [
+        {
+            "at": 0,
+            "do": "fill",
+            "region": [[0, 100, 0], [0, 100, 0]],
+            "with": {"id": "minecraft:stone"}
+        },
+        {
+            "at": 1,
+            "do": "assert",
+            "checks": [
+                {"pos": [0, 100, 0], "is": {"id": "minecraft:stone"}}
+            ]
+        }
+    ]
+}
