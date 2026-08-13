@@ -154,35 +154,11 @@ jobs:
         echo "Sent op command for flintmc_testbot"
         sleep 2
 
-    - name: Build FlintMC
-      run: cargo build
-
-    - name: Run accepted-command positive control
-      run: cargo run -- tests/command_receipts/valid_fill.json --server localhost:25565 --verbose
-
     - name: Run FlintMC Tests
-      run: |
-        # Run all example tests
-        cargo run -- FlintBenchmark/tests/ --server localhost:25565 --recursive --verbose
-      timeout-minutes: 10
-
-    - name: Run rejected-command negative control
-      run: |
-        set +e
-        cargo run -- tests/command_receipts/rejected_fill.json --server localhost:25565 --verbose > rejected-fill.log 2>&1
-        status=$?
-        set -e
-        cat rejected-fill.log
-
-        if [ "$status" -eq 0 ]; then
-          echo "Rejected fill unexpectedly passed"
-          exit 1
-        fi
-
-        if ! grep -Fq "server rejected command" rejected-fill.log; then
-          echo "Rejected fill failed for an unexpected reason"
-          exit 1
-        fi
+      env:
+        FLINTMC_TEST_SERVER: localhost:25565
+      run: cargo test --locked -- --include-ignored --test-threads=1
+      timeout-minutes: 12
 
     - name: Stop Minecraft Server
       if: always()
