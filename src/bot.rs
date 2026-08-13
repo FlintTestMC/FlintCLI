@@ -20,8 +20,94 @@ const STATE_SYNC_POLL_MS: u64 = 5;
 const CLIENT_VIEW_DISTANCE: u8 = 32;
 
 type ChatReceiver = std::sync::mpsc::Receiver<(Option<String>, String)>;
-type AckReceiver = std::sync::mpsc::Receiver<String>;
+type AckReceiver = std::sync::mpsc::Receiver<CommandAckEvent>;
 type UpdateReceiver = std::sync::mpsc::Receiver<()>;
+
+#[derive(Debug, PartialEq)]
+enum CommandAckEvent {
+    Marker(String),
+    Error {
+        message: String,
+        rejection_context: bool,
+    },
+    Disconnected(String),
+}
+
+fn command_ack_event(message: &azalea::FormattedText) -> Option<CommandAckEvent> {
+    let plain = message.to_string();
+    if plain.contains("__flintmc_ack_") {
+        return Some(CommandAckEvent::Marker(plain));
+    }
+
+    // Vanilla renders command errors in red. Execution-level no-ops, such as filling
+    // an already-empty region with air, use the same color, so they are only rejected
+    // when Brigadier also sends its locale-independent command context component.
+    let is_error = message
+        .get_base()
+        .style
+        .color
+        .as_ref()
+        .is_some_and(|color| color.value == 0xFF5555);
+    is_error.then(|| CommandAckEvent::Error {
+        message: plain,
+        rejection_context: message.clone().into_iter().any(|component| {
+            matches!(
+                component,
+                azalea::FormattedText::Translatable(component)
+                    if component.key == "command.context.here"
+            )
+        }),
+    })
+}
+
+fn wait_for_command_ack(
+    receiver: &AckReceiver,
+    marker: &str,
+    command: &str,
+    timeout: std::time::Duration,
+) -> Result<()> {
+    let deadline = std::time::Instant::now() + timeout;
+    let mut last_error = None;
+    let mut rejection = None;
+
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            anyhow::bail!("timed out waiting for command acknowledgement: {command}");
+        }
+
+        match receiver
+            .recv_timeout(remaining.min(std::time::Duration::from_millis(STATE_SYNC_POLL_MS)))
+        {
+            Ok(CommandAckEvent::Marker(message)) if message.contains(marker) => {
+                if let Some(error) = rejection {
+                    anyhow::bail!("server rejected command `{command}`: {}", error);
+                }
+                return Ok(());
+            }
+            Ok(CommandAckEvent::Marker(_)) => {}
+            Ok(CommandAckEvent::Error {
+                message,
+                rejection_context,
+            }) => {
+                if rejection_context {
+                    rejection = Some(last_error.take().unwrap_or(message));
+                } else {
+                    last_error = Some(message);
+                }
+            }
+            Ok(CommandAckEvent::Disconnected(reason)) => {
+                anyhow::bail!(
+                    "server disconnected while waiting for command acknowledgement: {reason}"
+                );
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                anyhow::bail!("command acknowledgement channel is unavailable");
+            }
+        }
+    }
+}
 
 struct TestBotRuntimePlugin {
     update_tx: std::sync::mpsc::SyncSender<()>,
@@ -55,7 +141,7 @@ struct State {
     client_handle: Arc<RwLock<Option<Client>>>,
     in_game: Arc<AtomicBool>,
     chat_tx: Option<std::sync::mpsc::Sender<(Option<String>, String)>>,
-    ack_tx: Option<std::sync::mpsc::Sender<String>>,
+    ack_tx: Option<std::sync::mpsc::Sender<CommandAckEvent>>,
     world_ready_tx: Option<std::sync::mpsc::SyncSender<()>>,
     view_distance: Arc<AtomicU32>,
     simulation_distance: Arc<AtomicU32>,
@@ -180,7 +266,8 @@ impl TestBot {
                         }
                         Event::Chat(m) => {
                             // Extract the message content
-                            let message = m.message().to_string();
+                            let formatted = m.message();
+                            let message = formatted.to_string();
                             // Try to get sender name (best effort)
                             // Fallback: parse "<Name>"
                             let sender = if message.starts_with('<') {
@@ -189,12 +276,32 @@ impl TestBot {
                                 None
                             };
 
-                            if message.contains("__flintmc_ack_") {
-                                if let Some(tx) = &state.ack_tx {
-                                    let _ = tx.send(message);
-                                }
-                            } else if let Some(ref tx) = state.chat_tx {
+                            let is_system = matches!(m, azalea::client_chat::ChatPacket::System(_));
+                            let ack_event =
+                                is_system.then(|| command_ack_event(&formatted)).flatten();
+                            let is_marker = matches!(ack_event, Some(CommandAckEvent::Marker(_)));
+                            if let Some(event) = ack_event
+                                && let Some(tx) = &state.ack_tx
+                            {
+                                let _ = tx.send(event);
+                            }
+                            if !is_marker && let Some(ref tx) = state.chat_tx {
                                 let _ = tx.send((sender, message));
+                            }
+                        }
+                        Event::Disconnect(reason) => {
+                            state.in_game.store(false, Ordering::SeqCst);
+                            if let Some(tx) = &state.ack_tx {
+                                let reason = reason
+                                    .map(|message| message.to_string())
+                                    .unwrap_or_else(|| "connection closed".to_string());
+                                let _ = tx.send(CommandAckEvent::Disconnected(reason));
+                            }
+                        }
+                        Event::ConnectionFailed(error) => {
+                            state.in_game.store(false, Ordering::SeqCst);
+                            if let Some(tx) = &state.ack_tx {
+                                let _ = tx.send(CommandAckEvent::Disconnected(error.to_string()));
                             }
                         }
                         Event::Packet(packet) => {
@@ -408,7 +515,8 @@ impl TestBot {
 
     /// Send a command and wait until the server has processed it. Commands from one
     /// connection are ordered, so receiving the marker also acknowledges every command
-    /// sent before it without relying on an arbitrary delay.
+    /// sent before it without relying on an arbitrary delay. Server-side command parser
+    /// rejections, disconnects, and acknowledgement channel failures are propagated.
     pub fn send_command_synced(&self, command: &str) -> Result<()> {
         self.send_command(command)?;
         let id = self.next_command_ack.fetch_add(1, Ordering::Relaxed);
@@ -417,21 +525,15 @@ impl TestBot {
             "tellraw flintmc_testbot {{\"text\":\"{marker}\"}}"
         ))?;
 
-        let deadline =
-            std::time::Instant::now() + std::time::Duration::from_millis(STATE_SYNC_TIMEOUT_MS);
-        while std::time::Instant::now() < deadline {
-            let Some(ack_rx) = &self.ack_rx else {
-                anyhow::bail!("command acknowledgement channel is unavailable");
-            };
-            if ack_rx
-                .lock()
-                .recv_timeout(std::time::Duration::from_millis(STATE_SYNC_POLL_MS))
-                .is_ok_and(|message| message.contains(&marker))
-            {
-                return Ok(());
-            }
-        }
-        anyhow::bail!("timed out waiting for command acknowledgement: {command}")
+        let Some(ack_rx) = &self.ack_rx else {
+            anyhow::bail!("command acknowledgement channel is unavailable");
+        };
+        wait_for_command_ack(
+            &ack_rx.lock(),
+            &marker,
+            command,
+            std::time::Duration::from_millis(STATE_SYNC_TIMEOUT_MS),
+        )
     }
 
     /// Fence server world changes against Azalea's packet processing. The marker is
@@ -829,5 +931,117 @@ fn normalized_item_id(id: &str) -> String {
         id.to_string()
     } else {
         format!("minecraft:{id}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_feedback_identifies_rejection_context() {
+        let message: azalea::FormattedText = serde_json::from_value(serde_json::json!({
+            "text": "",
+            "color": "red",
+            "extra": [{"translate": "command.context.here"}]
+        }))
+        .unwrap();
+
+        assert_eq!(
+            command_ack_event(&message),
+            Some(CommandAckEvent::Error {
+                message: "<--[HERE]".to_string(),
+                rejection_context: true,
+            })
+        );
+    }
+
+    #[test]
+    fn command_feedback_tolerates_valid_no_op_failure() {
+        let message: azalea::FormattedText = serde_json::from_value(serde_json::json!({
+            "translate": "commands.fill.failed",
+            "color": "red"
+        }))
+        .unwrap();
+
+        assert_eq!(
+            command_ack_event(&message),
+            Some(CommandAckEvent::Error {
+                message: "No blocks were filled".to_string(),
+                rejection_context: false,
+            })
+        );
+    }
+
+    #[test]
+    fn rejected_command_fails_after_draining_through_its_marker() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(CommandAckEvent::Error {
+            message: "Unknown block type 'minecraft:missing'".to_string(),
+            rejection_context: false,
+        })
+        .unwrap();
+        tx.send(CommandAckEvent::Error {
+            message: "<--[HERE]".to_string(),
+            rejection_context: true,
+        })
+        .unwrap();
+        tx.send(CommandAckEvent::Marker("__flintmc_ack_7__".to_string()))
+            .unwrap();
+
+        let error = wait_for_command_ack(
+            &rx,
+            "__flintmc_ack_7__",
+            "fill ... minecraft:missing",
+            std::time::Duration::from_millis(20),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("Unknown block type"));
+        assert!(rx.try_recv().is_err(), "receipt events should be drained");
+    }
+
+    #[test]
+    fn acknowledgement_propagates_disconnect() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(CommandAckEvent::Disconnected("server stopped".to_string()))
+            .unwrap();
+
+        let error = wait_for_command_ack(
+            &rx,
+            "__flintmc_ack_1__",
+            "fill ...",
+            std::time::Duration::from_millis(20),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("server stopped"));
+    }
+
+    #[test]
+    fn acknowledgement_propagates_closed_channel() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        drop(tx);
+
+        let error = wait_for_command_ack(
+            &rx,
+            "__flintmc_ack_1__",
+            "fill ...",
+            std::time::Duration::from_millis(20),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("channel is unavailable"));
+    }
+
+    #[test]
+    fn acknowledgement_has_a_bounded_timeout() {
+        let (_tx, rx) = std::sync::mpsc::channel();
+
+        let error = wait_for_command_ack(
+            &rx,
+            "__flintmc_ack_1__",
+            "fill ...",
+            std::time::Duration::from_millis(5),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("timed out"));
     }
 }

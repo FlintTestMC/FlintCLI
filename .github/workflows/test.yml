@@ -154,14 +154,11 @@ jobs:
         echo "Sent op command for flintmc_testbot"
         sleep 2
 
-    - name: Build FlintMC
-      run: cargo build
-
     - name: Run FlintMC Tests
-      run: |
-        # Run all example tests
-        cargo run -- FlintBenchmark/tests/ --server localhost:25565 --recursive --verbose
-      timeout-minutes: 10
+      env:
+        FLINTMC_TEST_SERVER: localhost:25565
+      run: cargo test --locked -- --include-ignored --test-threads=1
+      timeout-minutes: 12
 
     - name: Stop Minecraft Server
       if: always()

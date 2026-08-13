@@ -1,0 +1,26 @@
+{
+    "name": "command_receipt_rejected_fill",
+    "description": "A fill command rejected for an unknown block must fail the run",
+    "tags": ["command_receipt", "negative_control"],
+    "dependencies": [],
+    "setup": {
+        "cleanup": {
+            "region": [[0, 100, 0], [0, 100, 0]]
+        }
+    },
+    "timeline": [
+        {
+            "at": 0,
+            "do": "fill",
+            "region": [[0, 100, 0], [0, 100, 0]],
+            "with": {"id": "minecraft:flintmc_missing_block"}
+        },
+        {
+            "at": 1,
+            "do": "assert",
+            "checks": [
+                {"pos": [0, 100, 0], "is": {"id": "minecraft:air"}}
+            ]
+        }
+    ]
+}
