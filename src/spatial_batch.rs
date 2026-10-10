@@ -20,28 +20,47 @@ pub fn group_tests_by_world_config(tests: Vec<TestSpec>) -> Vec<Vec<TestSpec>> {
     groups
 }
 
-/// Blocks from world origin (0, 0) that can still be simulated when the bot stands at
-/// the layout center. Reserves two chunks of margin for the player and chunk edges.
+/// Available chunk radius in blocks, reserving two chunks for the player and edges.
 pub fn simulation_radius_blocks(simulation_distance: u32) -> i32 {
     (simulation_distance.saturating_sub(2) as i32) * 16
 }
 
-/// Maximum Chebyshev distance from origin for any corner of any test region in a batch.
-pub fn max_extent_from_origin(tests: &[(TestSpec, [i32; 3])]) -> i32 {
-    let mut max = 0;
+/// Required chunk radius when the bot moves between tests. Include the origin,
+/// cleanup regions, and player teleports so a test at the opposite edge stays loaded.
+pub fn max_distance_between_tests(tests: &[(TestSpec, [i32; 3])]) -> i32 {
+    let mut min = [0, 0];
+    let mut max = [0, 0];
     for (test, offset) in tests {
-        let region = test.cleanup_region();
-        for corner in [region[0], region[1]] {
-            let wx = offset[0] + corner[0];
-            let wz = offset[2] + corner[2];
-            max = max.max(wx.abs().max(wz.abs()));
+        let positions = test
+            .cleanup_region()
+            .into_iter()
+            .chain(
+                test.timeline
+                    .iter()
+                    .filter_map(|entry| match &entry.action_type {
+                        flint_core::test_spec::ActionType::Tp {
+                            entity_alias, pos, ..
+                        } if entity_alias == "player" => Some([
+                            pos[0].floor() as i32,
+                            pos[1].floor() as i32,
+                            pos[2].floor() as i32,
+                        ]),
+                        _ => None,
+                    }),
+            );
+        for pos in positions {
+            let world = [offset[0] + pos[0], offset[2] + pos[2]];
+            for axis in 0..2 {
+                min[axis] = min[axis].min(world[axis]);
+                max[axis] = max[axis].max(world[axis]);
+            }
         }
     }
-    max
+    (max[0] - min[0]).max(max[1] - min[1])
 }
 
-/// Split a batch so every sub-batch fits within the server's simulation distance from the
-/// layout center (origin). Tests stay parallel within each sub-batch.
+/// Split a batch so every sub-batch fits within the server's simulation distance from
+/// any player position in the batch. Tests stay parallel within each sub-batch.
 pub fn split_tests_by_simulation_distance(
     tests: Vec<TestSpec>,
     simulation_distance: u32,
@@ -59,7 +78,7 @@ pub fn split_tests_by_simulation_distance(
         let offsets = calculate_test_offsets_for_batch_default(&current);
         let paired: Vec<(TestSpec, [i32; 3])> = current.iter().cloned().zip(offsets).collect();
 
-        if max_extent_from_origin(&paired) > max_radius && current.len() > 1 {
+        if max_distance_between_tests(&paired) > max_radius && current.len() > 1 {
             let overflow = current.pop().expect("current has at least two tests");
             batches.push(current);
             current = vec![overflow];
@@ -122,6 +141,36 @@ mod tests {
         let batches = split_tests_by_simulation_distance(tests, 6);
         assert!(batches.len() > 1);
         assert_eq!(batches.iter().map(|b| b.len()).sum::<usize>(), 20);
+    }
+
+    #[test]
+    fn split_keeps_other_tests_loaded_when_player_moves_to_layout_edge() {
+        let tests: Vec<_> = (0..20)
+            .map(|i| test_spec(&format!("t{i}"), [[-20, 0, -20], [20, 0, 20]]))
+            .collect();
+        let radius = simulation_radius_blocks(10);
+        for batch in split_tests_by_simulation_distance(tests, 10) {
+            let offsets = calculate_test_offsets_for_batch_default(&batch);
+            let paired: Vec<_> = batch.into_iter().zip(offsets).collect();
+            let corners: Vec<_> = paired
+                .iter()
+                .flat_map(|(test, offset)| {
+                    test.cleanup_region()
+                        .map(|corner| [corner[0] + offset[0], corner[2] + offset[2]])
+                })
+                .collect();
+            for focus in &corners {
+                for target in &corners {
+                    assert!(
+                        (target[0] - focus[0])
+                            .abs()
+                            .max((target[1] - focus[1]).abs())
+                            <= radius,
+                        "target {target:?} leaves the loaded area when player moves to {focus:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
