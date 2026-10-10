@@ -143,12 +143,12 @@ impl TestExecutor {
             let region = test.cleanup_region();
             let min = self.apply_offset(region[0], *offset);
             let max = self.apply_offset(region[1], *offset);
-            let cx0 = min[0].div_euclid(16);
-            let cz0 = min[2].div_euclid(16);
-            let cx1 = max[0].div_euclid(16);
-            let cz1 = max[2].div_euclid(16);
             let verb = if add { "add" } else { "remove" };
-            let cmd = format!("forceload {verb} {cx0} {cz0} {cx1} {cz1}");
+            // /forceload accepts block coordinates and resolves the chunks itself.
+            let cmd = format!(
+                "forceload {verb} {} {} {} {}",
+                min[0], min[2], max[0], max[2]
+            );
             self.bot.send_command_synced(&cmd)?;
         }
         Ok(())
@@ -564,6 +564,8 @@ impl TestExecutor {
         }
 
         self.configure_batch_world(first)?;
+        self.bot.park_at(layout_center)?;
+        self.forceload_regions(tests_with_offsets, true)?;
 
         // Clean all test areas before starting
         if verbose {
@@ -572,8 +574,6 @@ impl TestExecutor {
         for (test, offset) in tests_with_offsets.iter() {
             self.cleanup_test_area(test, *offset)?;
         }
-
-        self.forceload_regions(tests_with_offsets, true)?;
 
         // Break after setup if requested
         let mut stepping_mode = false;

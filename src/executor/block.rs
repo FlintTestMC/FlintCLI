@@ -3,6 +3,16 @@
 use flint_core::test_spec::Block;
 use rustc_hash::FxHashMap;
 
+/// Compare a requested placement with the state observed by Azalea.
+pub fn placement_matches(actual: &Block, expected: &Block) -> bool {
+    let actual_id = actual.id.strip_prefix("minecraft:").unwrap_or(&actual.id);
+    let expected_id = expected
+        .id
+        .strip_prefix("minecraft:")
+        .unwrap_or(&expected.id);
+    actual_id == expected_id && properties_match(actual, expected)
+}
+
 /// Check that all expected block properties match an actual Azalea block state.
 pub fn properties_match(actual: &Block, expected: &Block) -> bool {
     expected.properties.iter().all(|(name, expected_value)| {
@@ -148,6 +158,21 @@ pub fn block_matches(actual: &str, expected: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn placement_accepts_default_minecraft_namespace() {
+        let actual = make_block("minecraft:copper_chain[axis=y,waterlogged=false]");
+        let expected = make_block("copper_chain[axis=y]");
+        assert!(placement_matches(&actual, &expected));
+        assert!(!placement_matches(
+            &actual,
+            &make_block("other:copper_chain")
+        ));
+        assert!(!placement_matches(
+            &actual,
+            &make_block("copper_chain[axis=x]")
+        ));
+    }
 
     #[test]
     fn test_extract_block_id_simple() {
