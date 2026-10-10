@@ -461,11 +461,11 @@ impl TestBot {
         let mut updates = client.get_update_broadcaster();
         let command = match rot {
             Some([yaw, pitch]) => format!(
-                "execute in minecraft:overworld run tp flintmc_testbot {} {} {} {} {}",
+                "execute in minecraft:overworld run tp flintmc_testbot {:?} {:?} {:?} {} {}",
                 pos[0], pos[1], pos[2], yaw, pitch
             ),
             None => format!(
-                "execute in minecraft:overworld run tp flintmc_testbot {} {} {}",
+                "execute in minecraft:overworld run tp flintmc_testbot {:?} {:?} {:?}",
                 pos[0], pos[1], pos[2]
             ),
         };
@@ -500,13 +500,38 @@ impl TestBot {
         };
         let mut updates = client.get_update_broadcaster();
         let mut ticks = client.get_tick_broadcaster();
-        let block_hit = client
-            .hit_result()?
-            .as_block_hit_result_if_not_miss()
-            .cloned();
-        if let Some(hit) = block_hit {
-            client.block_interact(hit.block_pos);
+        let item = {
+            let menu = client.menu()?;
+            let inventory = menu
+                .try_as_player()
+                .ok_or_else(|| anyhow::anyhow!("Bot does not have a player inventory open"))?;
+            let selected = usize::from(client.selected_hotbar_slot()?);
+            inventory.inventory[27 + selected].kind().to_str()
+        };
+        if matches!(
+            item,
+            "minecraft:bucket" | "minecraft:water_bucket" | "minecraft:lava_bucket"
+        ) {
+            // Fluid buckets implement item use, including their own fluid-aware
+            // raycast. Azalea's block-use path does not fall back to item use.
+            let seq = client.query_self::<&mut azalea::interact::BlockStatePredictionHandler, _>(
+                |mut prediction| prediction.start_predicting(),
+            )?;
+            let (y_rot, x_rot) = {
+                let direction = client.component::<azalea::entity::LookDirection>()?;
+                (direction.y_rot(), direction.x_rot())
+            };
+            client.write_packet(
+                azalea::protocol::packets::game::s_use_item::ServerboundUseItem {
+                    hand: azalea::protocol::packets::game::s_interact::InteractionHand::MainHand,
+                    seq,
+                    y_rot,
+                    x_rot,
+                },
+            );
         } else {
+            // Let Azalea resolve the crosshair when it processes the action.
+            // Forcing a cached block hit can target the previous test after a TP.
             client.start_use_item();
         }
         let _ = updates.blocking_recv();
@@ -677,40 +702,6 @@ impl TestBot {
                 }
             })
         })
-    }
-
-    /// Read a player inventory slot from the state reported by the server.
-    pub fn inventory_slot(&self, slot: PlayerSlot) -> Result<Option<Item>> {
-        let client_guard = self.get_client()?;
-        let client = client_guard
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Bot not initialized"))?;
-        let menu = client.menu()?;
-        let player = menu
-            .try_as_player()
-            .ok_or_else(|| anyhow::anyhow!("Bot does not have a player inventory open"))?;
-        let actual = match slot {
-            PlayerSlot::Hotbar1 => &player.inventory[27],
-            PlayerSlot::Hotbar2 => &player.inventory[28],
-            PlayerSlot::Hotbar3 => &player.inventory[29],
-            PlayerSlot::Hotbar4 => &player.inventory[30],
-            PlayerSlot::Hotbar5 => &player.inventory[31],
-            PlayerSlot::Hotbar6 => &player.inventory[32],
-            PlayerSlot::Hotbar7 => &player.inventory[33],
-            PlayerSlot::Hotbar8 => &player.inventory[34],
-            PlayerSlot::Hotbar9 => &player.inventory[35],
-            PlayerSlot::OffHand => &player.offhand,
-            PlayerSlot::Helmet => &player.armor[0],
-            PlayerSlot::Chestplate => &player.armor[1],
-            PlayerSlot::Leggings => &player.armor[2],
-            PlayerSlot::Boots => &player.armor[3],
-        };
-        if actual.is_empty() {
-            return Ok(None);
-        }
-        let count = u8::try_from(actual.count())
-            .map_err(|_| anyhow::anyhow!("invalid inventory count: {}", actual.count()))?;
-        Ok(Some(Item::with_count(actual.kind().to_str(), count)))
     }
 
     pub(crate) fn wait_until(

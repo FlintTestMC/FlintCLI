@@ -153,60 +153,48 @@ pub fn step_tick(bot: &mut TestBot, verbose: bool) -> Result<u64> {
     }
 }
 
-/// Sprint ticks and capture the time taken from server output
-/// Returns the ms per tick from the server's sprint completion message
-/// NOTE: Accounts for Minecraft's off-by-one bug where "tick sprint N" executes N+1 ticks
+/// Sprint ticks and return the estimated total duration in milliseconds.
 pub fn sprint_ticks(bot: &mut TestBot, ticks: u32, verbose: bool) -> Result<u64> {
-    // Clear any pending chat messages
     drain_chat_messages(bot);
 
-    // Account for Minecraft's off-by-one bug: "tick sprint N" executes N+1 ticks
-    // So to execute `ticks` ticks, we request ticks-1
+    // Minecraft's /tick sprint N executes N+1 ticks.
     let ticks_to_request = ticks - 1;
-
-    // Send the sprint command
     bot.send_command(&format!("tick sprint {}", ticks_to_request))?;
 
-    // Wait for the "Sprint completed" message
-    // Server message format: "Sprint completed with X ticks per second, or Y ms per tick"
-    let timeout = std::time::Duration::from_secs(SPRINT_TIMEOUT_SECS);
+    // Allow an extra millisecond per tick for long benchmarks.
+    let timeout = std::time::Duration::from_secs(SPRINT_TIMEOUT_SECS)
+        + std::time::Duration::from_millis(u64::from(ticks));
     let start = std::time::Instant::now();
 
     while start.elapsed() < timeout {
         if let Some((_, message)) =
             bot.recv_chat_timeout(std::time::Duration::from_millis(CHAT_POLL_TIMEOUT_MS))
+            && message.contains("Sprint completed")
         {
-            // Look for "Sprint completed" message
-            if message.contains("Sprint completed") {
-                bot.sync_client_world()?;
-                // Try to extract ms per tick
-                // Format: "... or X ms per tick"
-                if let Some(ms_part) = message.split("or ").nth(1)
-                    && let Some(ms_str) = ms_part.split(" ms per tick").next()
-                    && let Ok(ms) = ms_str.trim().parse::<f64>()
-                {
-                    let ms_rounded = ms.ceil() as u64;
-                    if verbose {
-                        println!(
-                            "    {} Sprint {} ticks completed in {} ms per tick",
-                            "⚡".dimmed(),
-                            ticks,
-                            ms_rounded
-                        );
-                    }
-                    // Return total time: ms per tick * number of ticks
-                    return Ok(ms_rounded * ticks as u64);
-                }
-                // If we found the message but couldn't parse, use default
+            bot.sync_client_world()?;
+            if let Some(ms_part) = message.split("or ").nth(1)
+                && let Some(ms_str) = ms_part.split(" ms per tick").next()
+                && let Ok(ms) = ms_str.trim().parse::<f64>()
+            {
+                let ms_rounded = ms.ceil() as u64;
                 if verbose {
                     println!(
-                        "    {} Sprint {} ticks completed (timing not parsed)",
+                        "    {} Sprint {} ticks completed in {} ms per tick",
                         "⚡".dimmed(),
-                        ticks
+                        ticks,
+                        ms_rounded
                     );
                 }
-                return Ok(MIN_RETRY_DELAY_MS);
+                return Ok(ms_rounded * ticks as u64);
             }
+            if verbose {
+                println!(
+                    "    {} Sprint {} ticks completed (timing not parsed)",
+                    "⚡".dimmed(),
+                    ticks
+                );
+            }
+            return Ok(MIN_RETRY_DELAY_MS);
         }
     }
 

@@ -95,7 +95,7 @@ impl MinecraftWorld {
                 return false;
             };
             let actual = block::make_block(&block::extract_block_id(&actual_block_str));
-            actual.id == expected.id && block::properties_match(&actual, &expected)
+            block::placement_matches(&actual, &expected)
         })
     }
 }
@@ -180,7 +180,7 @@ impl FlintWorld for MinecraftWorld {
         let _ = self.bot.send_command(&format!("kill @e[tag={}]", tag));
         let nbt = summon_nbt_with_tag(nbt.map(EntityNbt::to_snbt).as_deref(), &tag);
         let cmd = format!(
-            "summon {} {} {} {} {}",
+            "summon {} {:?} {:?} {:?} {}",
             entity_type, world_pos[0], world_pos[1], world_pos[2], nbt
         );
         self.bot.send_command(&cmd)?;
@@ -206,11 +206,11 @@ impl FlintWorld for MinecraftWorld {
         ];
         let cmd = match rot {
             Some([yaw, pitch]) => format!(
-                "tp {} {} {} {} {} {}",
+                "tp {} {:?} {:?} {:?} {} {}",
                 selector, world_pos[0], world_pos[1], world_pos[2], yaw, pitch
             ),
             None => format!(
-                "tp {} {} {} {}",
+                "tp {} {:?} {:?} {:?}",
                 selector, world_pos[0], world_pos[1], world_pos[2]
             ),
         };
@@ -635,7 +635,24 @@ impl MinecraftPlayer {
                 9 => PlayerSlot::Hotbar9,
                 _ => anyhow::bail!("invalid selected hotbar slot: {}", self.selected_hotbar),
             };
-            let observed = self.bot.inventory_slot(slot)?;
+            // Inventory updates are broadcast at the end of the server tick, so
+            // a chat acknowledgement alone can still expose the pre-use stack.
+            // Query the server before reconciling this virtual player's inventory.
+            let path = format!("Inventory[{{Slot:{}b}}]", self.selected_hotbar - 1);
+            let observed =
+                match query_entity_data(&self.bot, "flintmc_testbot", &format!("{path}.id")) {
+                    Ok(id) => {
+                        let count = query_entity_data(
+                            &self.bot,
+                            "flintmc_testbot",
+                            &format!("{path}.count"),
+                        )?
+                        .parse::<u8>()?;
+                        Some(Item::with_count(id.trim_matches('"'), count))
+                    }
+                    Err(error) if error.to_string().contains("Found no elements") => None,
+                    Err(error) => return Err(error),
+                };
             reconcile_inventory_slot(&mut self.inventory, slot, observed);
         }
         self.bot.wait_for_inventory(&self.inventory)?;
