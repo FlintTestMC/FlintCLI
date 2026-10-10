@@ -1476,6 +1476,7 @@ dependencies = [
 [[package]]
 name = "flint-core"
 version = "1.1.4"
+source = "git+https://github.com/FlintTestMC/flint-core?rev=a6f4d12c02cd37877d5b77e81b51477b16ab54c3#a6f4d12c02cd37877d5b77e81b51477b16ab54c3"
 dependencies = [
  "anyhow",
  "base64",
@@ -1499,9 +1500,11 @@ dependencies = [
  "colored",
  "flint-core",
  "parking_lot",
+ "quote",
  "rustc-hash",
  "serde",
  "serde_json",
+ "syn",
  "tokio",
  "tracing",
  "tracing-subscriber",

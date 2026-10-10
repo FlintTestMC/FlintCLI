@@ -1,11 +1,17 @@
 use crate::bot::{TestBot, slot_to_minecraft_name};
 use crate::executor::block;
+use crate::executor::parsing::numbers_after_colon;
 use crate::executor::tick;
 use anyhow::Result;
 use flint_core::BlockPos;
 use flint_core::test_spec::{Block, EntityNbt, GameMode, Item, PlayerSlot};
 use flint_core::traits::{EntityState, FlintAdapter, FlintPlayer, FlintWorld, ServerInfo};
 use std::collections::HashMap;
+
+const BLOCK_READ_ATTEMPTS: usize = 10;
+const BLOCK_READ_RETRY_DELAY_MS: u64 = 50;
+const COMMAND_QUERY_TIMEOUT_SECS: u64 = 3;
+const MINECRAFT_DAY_TICKS: u64 = 24_000;
 
 #[allow(dead_code)]
 pub struct MinecraftAdapter {
@@ -130,7 +136,7 @@ impl FlintWorld for MinecraftWorld {
 
     fn get_block(&self, pos: BlockPos, requested_nbt: &[String]) -> Result<Block> {
         let world_pos = self.world_pos(pos);
-        for _ in 0..10 {
+        for _ in 0..BLOCK_READ_ATTEMPTS {
             if let Ok(Some(actual_block_str)) = self.bot.get_block(world_pos) {
                 let normalized_id = block::extract_block_id(&actual_block_str);
                 let mut block = block::make_block(&normalized_id);
@@ -146,7 +152,7 @@ impl FlintWorld for MinecraftWorld {
                     return Ok(block);
                 }
             }
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            std::thread::sleep(std::time::Duration::from_millis(BLOCK_READ_RETRY_DELAY_MS));
         }
 
         anyhow::bail!("timed out reading block at {world_pos:?}")
@@ -338,7 +344,7 @@ impl FlintWorld for MinecraftWorld {
 
 fn query_entity_numbers(bot: &TestBot, selector: &str, path: &str) -> Result<Vec<f64>> {
     let message = query_entity_data_message(bot, selector, path)?;
-    let values = parse_numbers_after_colon(&message);
+    let values = numbers_after_colon(&message);
     if values.is_empty() {
         anyhow::bail!("entity query returned no numbers: {message}");
     }
@@ -349,7 +355,7 @@ fn query_entity_count(bot: &TestBot, selector: &str) -> Result<usize> {
     let _query_guard = bot.lock_command_query();
     drain_chat(bot);
     bot.send_command(&format!("execute if entity {selector}"))?;
-    let timeout = std::time::Duration::from_secs(3);
+    let timeout = std::time::Duration::from_secs(COMMAND_QUERY_TIMEOUT_SECS);
     let started = std::time::Instant::now();
     while started.elapsed() < timeout {
         if let Some((sender, message)) =
@@ -374,11 +380,8 @@ fn query_entity_count(bot: &TestBot, selector: &str) -> Result<usize> {
 }
 
 pub(crate) fn query_daytime(bot: &TestBot) -> Result<u64> {
-    query_time_command(bot, "time query minecraft:day", "daytime").map(|time| time % 24_000)
-}
-
-pub(crate) fn query_gametime(bot: &TestBot) -> Result<u64> {
-    query_time_command(bot, "time query gametime", "game time")
+    query_time_command(bot, "time query minecraft:day", "daytime")
+        .map(|time| time % MINECRAFT_DAY_TICKS)
 }
 
 fn query_time_command(bot: &TestBot, command: &str, label: &str) -> Result<u64> {
@@ -386,7 +389,7 @@ fn query_time_command(bot: &TestBot, command: &str, label: &str) -> Result<u64> 
     drain_chat(bot);
 
     bot.send_command(command)?;
-    let timeout = std::time::Duration::from_secs(3);
+    let timeout = std::time::Duration::from_secs(COMMAND_QUERY_TIMEOUT_SECS);
     let started = std::time::Instant::now();
     while started.elapsed() < timeout {
         if let Some((sender, message)) =
@@ -423,7 +426,7 @@ fn query_block_data(bot: &TestBot, pos: BlockPos, path: &str) -> Result<String> 
         "data get block {} {} {} {path}",
         pos[0], pos[1], pos[2]
     ))?;
-    let timeout = std::time::Duration::from_secs(3);
+    let timeout = std::time::Duration::from_secs(COMMAND_QUERY_TIMEOUT_SECS);
     let started = std::time::Instant::now();
     while started.elapsed() < timeout {
         if let Some((sender, message)) =
@@ -459,7 +462,7 @@ fn query_entity_data_message(bot: &TestBot, selector: &str, path: &str) -> Resul
     drain_chat(bot);
 
     bot.send_command(&format!("data get entity {selector} {path}"))?;
-    let timeout = std::time::Duration::from_secs(3);
+    let timeout = std::time::Duration::from_secs(COMMAND_QUERY_TIMEOUT_SECS);
     let started = std::time::Instant::now();
 
     while started.elapsed() < timeout {
@@ -487,40 +490,21 @@ fn drain_chat(bot: &TestBot) {
     {}
 }
 
-fn parse_numbers_after_colon(message: &str) -> Vec<f64> {
-    let value_part = message
-        .split_once(':')
-        .map(|(_, value)| value)
-        .unwrap_or(message);
-    value_part
-        .split(|c: char| {
-            !(c.is_ascii_digit() || c == '-' || c == '+' || c == '.' || c == 'e' || c == 'E')
-        })
-        .filter_map(|part| {
-            if part.is_empty() || part == "-" || part == "+" || part == "." {
-                None
-            } else {
-                part.parse::<f64>().ok()
-            }
-        })
-        .collect()
-}
-
 fn summon_nbt_with_tag(nbt: Option<&str>, tag: &str) -> String {
+    let tag_only = || format!("{{Tags:[\"{tag}\"]}}");
     match nbt.map(str::trim).filter(|nbt| !nbt.is_empty()) {
-        None => format!("{{Tags:[\"{tag}\"]}}"),
-        Some("{}") => format!("{{Tags:[\"{tag}\"]}}"),
+        None | Some("{}") => tag_only(),
         Some(nbt) if nbt.starts_with('{') && nbt.ends_with('}') => {
             let inner = &nbt[1..nbt.len() - 1];
             if inner.trim().is_empty() {
-                format!("{{Tags:[\"{tag}\"]}}")
+                tag_only()
             } else {
                 format!("{{{inner},Tags:[\"{tag}\"]}}")
             }
         }
         Some(nbt) => {
             tracing::warn!("Invalid summon NBT '{}', using only FlintMC alias tag", nbt);
-            format!("{{Tags:[\"{tag}\"]}}")
+            tag_only()
         }
     }
 }

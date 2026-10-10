@@ -3,8 +3,10 @@
 mod actions;
 pub mod adapter;
 mod block;
+pub(crate) mod commands;
 mod events;
 mod handlers;
+mod parsing;
 mod recorder;
 mod tick;
 
@@ -22,6 +24,7 @@ use std::io::Write;
 
 // Timing constants
 const DEFAULT_TESTS_DIR: &str = "FlintBenchmark/tests";
+const CHUNK_WIDTH: i32 = 16;
 
 fn asserted_entity_types(test: &TestSpec) -> BTreeSet<String> {
     test.timeline
@@ -57,6 +60,7 @@ pub struct TestRunOutput {
 pub struct TestExecutor {
     pub bot: TestBot,
     recorder: Option<recorder::RecorderState>,
+    recorder_dialog_enabled: bool,
     verbose: bool,
     quiet: bool,
     fail_fast: bool,
@@ -65,6 +69,7 @@ pub struct TestExecutor {
     events_path: Option<std::path::PathBuf>,
     events: Option<events::JsonlWriter>,
     enable_breakpoints: bool,
+    last_failure_links: Vec<(String, String)>,
 }
 
 impl Default for TestExecutor {
@@ -72,6 +77,7 @@ impl Default for TestExecutor {
         Self {
             bot: TestBot::new(),
             recorder: None,
+            recorder_dialog_enabled: false,
             verbose: false,
             quiet: false,
             fail_fast: false,
@@ -80,6 +86,7 @@ impl Default for TestExecutor {
             events_path: None,
             events: None,
             enable_breakpoints: true,
+            last_failure_links: Vec::new(),
         }
     }
 }
@@ -130,7 +137,7 @@ impl TestExecutor {
     }
 
     /// Helper to apply offset to a position
-    fn apply_offset(&self, pos: [i32; 3], offset: [i32; 3]) -> [i32; 3] {
+    fn apply_offset(pos: [i32; 3], offset: [i32; 3]) -> [i32; 3] {
         [pos[0] + offset[0], pos[1] + offset[1], pos[2] + offset[2]]
     }
 
@@ -141,12 +148,12 @@ impl TestExecutor {
     ) -> Result<()> {
         for (test, offset) in tests_with_offsets {
             let region = test.cleanup_region();
-            let min = self.apply_offset(region[0], *offset);
-            let max = self.apply_offset(region[1], *offset);
-            let cx0 = min[0].div_euclid(16);
-            let cz0 = min[2].div_euclid(16);
-            let cx1 = max[0].div_euclid(16);
-            let cz1 = max[2].div_euclid(16);
+            let min = Self::apply_offset(region[0], *offset);
+            let max = Self::apply_offset(region[1], *offset);
+            let cx0 = min[0].div_euclid(CHUNK_WIDTH);
+            let cz0 = min[2].div_euclid(CHUNK_WIDTH);
+            let cx1 = max[0].div_euclid(CHUNK_WIDTH);
+            let cz1 = max[2].div_euclid(CHUNK_WIDTH);
             let verb = if add { "add" } else { "remove" };
             let cmd = format!("forceload {verb} {cx0} {cz0} {cx1} {cz1}");
             self.bot.send_command_synced(&cmd)?;
@@ -159,168 +166,74 @@ impl TestExecutor {
         // Interactive mode always uses verbose output
         self.verbose = true;
 
-        // Send help message to chat (without ! to avoid self-triggering)
+        // Omit ! in bot-authored chat so the hint cannot trigger command parsing.
         self.bot
             .send_command_synced("say FlintMC Interactive Mode active")?;
-        self.bot.send_command_synced(
-            "say Type: help, search, run, run-all, run-tags, list, reload, stop (prefix with !)",
-        )?;
+        let command_hint = commands::command_aliases(commands::CommandScope::Main, false);
+        self.bot
+            .send_command_synced(&format!("say Type: {command_hint} (prefix with !)"))?;
 
         // Drain any messages
         tick::drain_chat_messages(&mut self.bot);
 
         // Collect all tests upfront
         let mut all_test_files = test_loader.collect_all_test_files()?;
+        let mut next_recorder_ui_poll = std::time::Instant::now();
+        let mut last_recorder_ui_action = None::<std::time::Instant>;
 
         loop {
+            if self.recorder.is_some()
+                && self.recorder_dialog_enabled
+                && std::time::Instant::now() >= next_recorder_ui_poll
+            {
+                self.poll_recorder_dialog_action()?;
+                next_recorder_ui_poll =
+                    std::time::Instant::now() + std::time::Duration::from_millis(500);
+            }
             // Poll for chat messages
             if let Some((sender, message)) = self
                 .bot
                 .recv_chat_timeout(std::time::Duration::from_millis(tick::CHAT_POLL_TIMEOUT_MS))
             {
+                if handlers::is_bot_sender(sender.as_deref()) {
+                    continue;
+                }
                 let Some((command, args)) = handlers::parse_command(&message) else {
                     continue;
                 };
+                let is_recorder_ui_action = message.contains("__flintmc_recorder_");
+                if is_recorder_ui_action {
+                    let now = std::time::Instant::now();
+                    if last_recorder_ui_action
+                        .is_some_and(|previous| now.duration_since(previous).as_millis() < 750)
+                    {
+                        continue;
+                    }
+                    last_recorder_ui_action = Some(now);
+                    self.consume_recorder_dialog_action(sender.as_deref())?;
+                }
 
                 match command.as_str() {
-                    "!help" => {
-                        self.handle_help()?;
-                    }
-
-                    "!list" => {
-                        self.handle_list(&all_test_files)?;
-                    }
-
-                    "!search" => {
-                        if args.is_empty() {
-                            self.bot.send_command("say Usage: !search <pattern>")?;
-                            continue;
+                    _ if commands::from_chat(&command).is_some() => {
+                        let flint_command = commands::from_chat(&command).expect("guarded command");
+                        let opens_recorder_dialog = command == "!recorder";
+                        let mut context = commands::FlintCommandContext {
+                            args: &args,
+                            sender: sender.clone(),
+                            test_loader,
+                            all_test_files: &mut all_test_files,
+                            exit_interactive: false,
+                        };
+                        commands::dispatch(self, flint_command, &mut context)?;
+                        if context.exit_interactive {
+                            return Ok(());
                         }
-                        let pattern = args.join(" ");
-                        self.handle_search(&all_test_files, &pattern)?;
-                    }
-
-                    "!run" => {
-                        if args.is_empty() {
-                            self.bot
-                                .send_command("say Usage: !run <test_name> [step]")?;
-                            continue;
+                        if self.recorder.is_some()
+                            && (is_recorder_ui_action || opens_recorder_dialog)
+                        {
+                            self.recorder_dialog_enabled = true;
+                            self.show_recorder_dialog()?;
                         }
-
-                        // Check for step flag
-                        let (test_name, step_mode) =
-                            if args.last().map(|s| s.as_str()) == Some("step") && args.len() > 1 {
-                                (args[..args.len() - 1].join(" "), true)
-                            } else {
-                                (args.join(" "), false)
-                            };
-
-                        self.handle_run(&all_test_files, &test_name, step_mode)?;
-                    }
-
-                    "!run-all" => {
-                        self.handle_run_all(&all_test_files)?;
-                    }
-
-                    "!run-tags" => {
-                        if args.is_empty() {
-                            self.bot
-                                .send_command("say Usage: !run-tags <tag1,tag2,...>")?;
-                            continue;
-                        }
-                        let tags: Vec<String> =
-                            args[0].split(',').map(|s| s.trim().to_string()).collect();
-                        self.handle_run_tags(test_loader, &tags)?;
-                    }
-
-                    "!stop" => {
-                        self.bot
-                            .send_command("say Exiting interactive mode. Goodbye!")?;
-                        return Ok(());
-                    }
-
-                    "!reload" => {
-                        test_loader.verify_and_rebuild_index()?;
-                        all_test_files = test_loader.collect_all_test_files()?;
-                        self.bot.send_command(&format!(
-                            "say Reloaded {} tests",
-                            all_test_files.len()
-                        ))?;
-                    }
-
-                    // Recorder commands
-                    "!record" => {
-                        if args.is_empty() {
-                            self.bot
-                                .send_command("say Usage: !record <test_name> [player_name]")?;
-                            self.bot.send_command(
-                                "say Example: !record my_test or !record fence/fence_connect",
-                            )?;
-                            continue;
-                        }
-                        let test_name = args[0].clone();
-                        let player_name = args.get(1).cloned().or_else(|| sender.clone());
-                        self.handle_record_start(&test_name, test_loader, player_name)?;
-                    }
-                    "!assert_changes" => {
-                        self.handle_record_assert_changes()?;
-                    }
-
-                    "!use" => {
-                        self.handle_record_use(&args)?;
-                    }
-
-                    "!tick" | "!next" => {
-                        self.handle_record_tick()?;
-                    }
-
-                    "!pos1" | "!pos" => {
-                        if (!args.is_empty() && args.len() < 3) || args.len() > 3 {
-                            self.bot.send_command("say Usage: !assert <x> <y> <z>")?;
-                            continue;
-                        }
-                        self.handle_pos1(&args);
-                    }
-
-                    "!assert" => {
-                        if args.len() < 3 {
-                            self.bot.send_command("say Usage: !assert <x> <y> <z>")?;
-                            continue;
-                        }
-                        self.last_assert_pos = args.clone();
-                        self.handle_record_assert(&args)?;
-                    }
-                    "!sprint" => {
-                        if args.len() != 1 {
-                            self.bot.send_command("say Usage: !sprint <ticks>")?;
-                            self.bot.send_command(
-                                "say: please be assert before a start state of a block/region",
-                            )?;
-                            continue;
-                        }
-                        let ticks = args[0].parse::<u32>().unwrap_or(1);
-                        if ticks == 0 {
-                            self.bot
-                                .send_command("say Sprint ticks must be greater than 0")?;
-                            continue;
-                        }
-                        if self.last_assert_pos.is_empty() {
-                            self.bot.send_command("say Please assert a position first, which should be used for each string (can be also a 3d area)")?;
-                            continue;
-                        }
-                        self.handle_record_sprint(ticks)?;
-                    }
-
-                    "!save" => {
-                        if self.handle_record_save()? {
-                            // Reload tests after successful save
-                            test_loader.verify_and_rebuild_index()?;
-                            all_test_files = test_loader.collect_all_test_files()?;
-                        }
-                    }
-
-                    "!cancel" => {
-                        self.handle_record_cancel()?;
                     }
 
                     _ => {
@@ -405,10 +318,6 @@ impl TestExecutor {
 
     fn configure_batch_world(&mut self, first: &TestSpec) -> Result<()> {
         self.bot.send_command_synced("tick freeze")?;
-        let game_time = adapter::query_gametime(&self.bot)?;
-        for _ in 0..(20 - game_time % 20) % 20 {
-            tick::step_tick(&mut self.bot, false)?;
-        }
 
         let world_config = first.world_config();
         let mut gamerules: Vec<_> = world_config.gamerules.iter().collect();
@@ -426,8 +335,8 @@ impl TestExecutor {
 
     fn cleanup_test_area(&self, test: &TestSpec, offset: [i32; 3]) -> Result<()> {
         let region = test.cleanup_region();
-        let min = self.apply_offset(region[0], offset);
-        let max = self.apply_offset(region[1], offset);
+        let min = Self::apply_offset(region[0], offset);
+        let max = Self::apply_offset(region[1], offset);
         self.bot.send_command_synced(&format!(
             "fill {} {} {} {} {} {} air",
             min[0], min[1], min[2], max[0], max[1], max[2]
@@ -460,8 +369,8 @@ impl TestExecutor {
                     current_tick: 0,
                     entities: std::collections::HashMap::new(),
                     entity_bounds: Some([
-                        self.apply_offset(region[0], *offset),
-                        self.apply_offset(region[1], *offset),
+                        Self::apply_offset(region[0], *offset),
+                        Self::apply_offset(region[1], *offset),
                     ]),
                 }
             })
@@ -589,8 +498,8 @@ impl TestExecutor {
         let scan_bounds: Option<([i32; 3], [i32; 3])> = if self.events.is_some() {
             let (test, offset) = &tests_with_offsets[0];
             let region = test.cleanup_region();
-            let world_min = self.apply_offset(region[0], *offset);
-            let world_max = self.apply_offset(region[1], *offset);
+            let world_min = Self::apply_offset(region[0], *offset);
+            let world_max = Self::apply_offset(region[1], *offset);
             if let Some(events) = self.events.as_mut() {
                 events.run_started(&test.name, [world_min, world_max])?;
             }
@@ -890,6 +799,30 @@ impl TestExecutor {
             })
             .collect();
 
+        let base_url = std::env::var("FLINT_VIZ_URL")
+            .unwrap_or_else(|_| "https://flinttestmc.github.io/FlintViz/#".to_string());
+        for (test_name, failure) in &failures {
+            let Some((test, _)) = tests_with_offsets
+                .iter()
+                .find(|(test, _)| test.name == *test_name)
+            else {
+                continue;
+            };
+            let payload = flint_core::viz_link::FailurePayload::new(
+                test.clone(),
+                None,
+                vec![failure.clone()],
+                failure.tick(),
+            );
+            if let Ok(url) = flint_core::viz_link::failure_url(&payload, &base_url) {
+                self.last_failure_links.push((test_name.clone(), url));
+            }
+        }
+        if !failures.is_empty() {
+            self.bot
+                .send_command_synced("say Type !failure for clickable FlintViz failure links")?;
+        }
+
         // A virtual player may have left the shared bot inside a test region. Park the
         // physical bot at the layout center after every run, including playerless runs.
         self.bot.park_at(layout_center)?;
@@ -898,7 +831,7 @@ impl TestExecutor {
     }
 
     fn execute_action(
-        &mut self,
+        &self,
         world: &mut MinecraftWorld,
         player: &mut Option<Box<dyn FlintPlayer>>,
         tick: u32,

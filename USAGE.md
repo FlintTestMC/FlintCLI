@@ -221,7 +221,7 @@ The recorder lets you create tests by performing actions in-game. The bot watche
    flintmc -s localhost:25565 -i
    ```
 
-2. Begin recording:
+2. Begin recording with the existing chat command:
    ```
    !record redstone/my_test
    ```
@@ -232,13 +232,29 @@ The recorder lets you create tests by performing actions in-game. The bot watche
    flintmc -s localhost:25565 --record redstone/my_test
    ```
 
-3. Place and break blocks in-game. The bot scans for changes in a fixed 10-block radius around the position where recording started.
+3. Place and break blocks in-game. The bot scans for changes in a fixed two-chunk
+   (32-block) radius around the position where recording started.
 
-4. When ready to advance a tick:
+4. Use the recorder dialog to advance a tick, record all block changes since the
+   previous snapshot, record a use, convert changes to
+   assertions, assert the block under the player's crosshair, set a region
+   corner from that block, save, or cancel. The dialog refreshes after each
+   action to show the current tick and recorded action count. Coordinate-specific
+   chat commands remain available through `!assert` and `!pos1`.
+
+   The equivalent chat command for advancing a tick is:
    ```
    !tick
    ```
-   This snapshots the current block changes, steps the game one tick, and advances the recording tick counter. You can also use `!next` as an alias.
+   This steps the game exactly one tick and advances the recording tick counter. You can also use `!next` as an alias.
+
+   To add all block changes since the previous saved world-state snapshot, use the
+   **Record block changes** button or either chat command:
+
+   ```text
+   !snapshot
+   !changes
+   ```
 
 5. Add assertions for blocks you want to verify:
    ```
@@ -273,7 +289,9 @@ The recorder lets you create tests by performing actions in-game. The bot watche
 | Command | Description |
 |---------|-------------|
 | `!record <name> [player]` | Start recording. Optional player name for position tracking |
-| `!tick` / `!next` | Snapshot changes and advance one game tick |
+| `!recorder` | Reopen the recorder dialog without changing recording state |
+| `!tick` / `!next` | Advance exactly one game tick |
+| `!snapshot` / `!changes` | Record all block changes since the previous snapshot |
 | `!assert <x> <y> <z>` | Assert the block at the given coordinates |
 | `!use [item]` | Record `tp` to the tracked player's current pose, then `interact` |
 | `!assert_changes` | Convert all detected block changes to assertions |
@@ -282,7 +300,8 @@ The recorder lets you create tests by performing actions in-game. The bot watche
 
 ### Tips
 
-- The recorder auto-detects block placements and removals within the fixed scan range captured when recording starts.
+- The recorder auto-detects block placements and removals within the fixed
+  two-chunk scan range captured when recording starts.
 - Use `!record <name> [player]` to choose which player is used for the initial scan center and later `!use` pose capture.
 - Positions are stored relative to the first block changed (origin), so tests are portable.
 - The cleanup region is computed automatically from the bounding box of all affected blocks.

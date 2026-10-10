@@ -14,7 +14,8 @@ use super::actions::{RecordedAction, TimelineStep};
 use super::bounding_box::BoundingBox;
 
 // Constants
-const DEFAULT_SCAN_RADIUS: i32 = 16;
+/// Two chunks in every direction from the recorder's fixed center.
+const DEFAULT_SCAN_RADIUS: i32 = 32;
 const DEFAULT_CLEANUP_REGION: [[i32; 3]; 2] = [[0, 0, 0], [10, 10, 10]];
 
 /// State for an active recording session
@@ -99,13 +100,18 @@ impl RecorderState {
 
     /// Get or create the timeline step for the current tick
     fn get_or_create_current_step(&mut self) -> &mut TimelineStep {
-        if self.timeline.is_empty() || self.timeline.last().unwrap().tick != self.current_tick {
+        if self
+            .timeline
+            .last()
+            .is_none_or(|step| step.tick != self.current_tick)
+        {
             self.timeline.push(TimelineStep {
                 tick: self.current_tick,
                 actions: Vec::new(),
             });
         }
-        self.timeline.last_mut().unwrap()
+        let current_step = self.timeline.len() - 1;
+        &mut self.timeline[current_step]
     }
 
     /// Remove any existing Place/Remove actions for this position in the current tick
@@ -157,8 +163,7 @@ impl RecorderState {
     /// Record a block removal
     pub fn record_remove(&mut self, world_pos: [i32; 3]) {
         if self.origin.is_none() {
-            // Can't remove before any placement
-            return;
+            self.set_origin(world_pos);
         }
 
         let local_pos = self.to_local(world_pos);
@@ -170,8 +175,8 @@ impl RecorderState {
         let step = self.get_or_create_current_step();
         step.actions.push(RecordedAction::Remove { pos: local_pos });
 
-        // Update snapshot - store air to track the removal
-        self.snapshot.insert(world_pos, "minecraft:air".to_string());
+        // Snapshots contain non-air blocks only.
+        self.snapshot.remove(&world_pos);
     }
 
     /// Add an assertion for a block
@@ -210,47 +215,6 @@ impl RecorderState {
             rot,
         });
         step.actions.push(RecordedAction::Interact { item });
-    }
-
-    /// Convert all Place/Remove actions in the current tick to Assertions
-    pub fn convert_actions_to_asserts(&mut self) -> usize {
-        let mut converted_count = 0;
-
-        if let Some(step) = self.timeline.last_mut()
-            && step.tick == self.current_tick
-        {
-            let mut new_actions = Vec::new();
-
-            // Drain existing actions and convert them
-            for action in step.actions.drain(..) {
-                match action {
-                    RecordedAction::Place { pos, block } => {
-                        new_actions.push(RecordedAction::Assert { pos, block });
-                        converted_count += 1;
-                    }
-                    RecordedAction::Remove { pos } => {
-                        // Removing a block means asserting it is air
-                        new_actions.push(RecordedAction::Assert {
-                            pos,
-                            block: "minecraft:air".to_string(),
-                        });
-                        converted_count += 1;
-                    }
-                    // Keep existing asserts unchanged
-                    assert_action @ RecordedAction::Assert { .. } => {
-                        new_actions.push(assert_action);
-                    }
-                    player_action @ (RecordedAction::Tp { .. }
-                    | RecordedAction::Interact { .. }) => {
-                        new_actions.push(player_action);
-                    }
-                }
-            }
-
-            step.actions = new_actions;
-        }
-
-        converted_count
     }
 
     /// Advance to the next tick
@@ -378,10 +342,28 @@ impl RecorderState {
             std::fs::create_dir_all(parent)?;
         }
 
-        // Write the JSON file with pretty formatting using serde
-        let json_str = serde_json::to_string_pretty(&test_spec)?;
+        // flint-core's ActionType serializer writes absent optional action fields
+        // as null, while its deserializer expects those fields to be omitted.
+        let mut json = serde_json::to_value(&test_spec)?;
+        omit_null_timeline_fields(&mut json);
+        let json_str = serde_json::to_string_pretty(&json)?;
         std::fs::write(&self.test_path, json_str)?;
 
         Ok(self.test_path.clone())
+    }
+}
+
+fn omit_null_timeline_fields(json: &mut serde_json::Value) {
+    let Some(timeline) = json
+        .get_mut("timeline")
+        .and_then(|value| value.as_array_mut())
+    else {
+        return;
+    };
+
+    for entry in timeline {
+        if let Some(fields) = entry.as_object_mut() {
+            fields.retain(|_, value| !value.is_null());
+        }
     }
 }

@@ -18,85 +18,84 @@ pub fn properties_match(actual: &Block, expected: &Block) -> bool {
 /// Output: "minecraft:oak_fence[east=false,west=false]"
 pub fn extract_block_id(debug_str: &str) -> String {
     let s = debug_str.trim();
+    let (name, properties) = block_state_parts(s);
+    let block_id = normalize_block_id(name);
+    format_properties(block_id, properties)
+}
 
-    // 1. Extract Name and Properties part
-    let (name_part, props_part) = if s.starts_with("BlockState(id:") {
-        if let Some(comma_pos) = s.find(',') {
-            let after_id = s[comma_pos + 1..].trim(); // "OakFence { ... })"
-            // Check if it has properties
-            if let Some(brace_start) = after_id.find('{') {
-                let name = after_id[..brace_start].trim();
-                let props_end = after_id.rfind('}').unwrap_or(after_id.len());
-                let props = &after_id[brace_start + 1..props_end];
-                (name, Some(props))
-            } else {
-                // No properties: "Stone)"
-                let end = after_id.find(')').unwrap_or(after_id.len());
-                (after_id[..end].trim(), None)
-            }
-        } else {
-            ("air", None)
-        }
-    } else if s.starts_with("BlockState") {
-        // Fallback for "BlockState { stone, properties: {...} }"
-        if let Some(inner_start) = s.find('{') {
-            let inner = &s[inner_start + 1..];
-            let end = inner.find([',', '}']).unwrap_or(inner.len());
-            (inner[..end].trim(), None)
-        } else {
-            ("air", None)
-        }
-    } else {
-        // Raw string?
-        (s.split([',', '{', ' ', '}']).next().unwrap_or(s), None)
-    };
-
-    // 2. Normalize Name (PascalCase -> snake_case)
-    let mut snake = String::new();
-    for (i, c) in name_part.chars().enumerate() {
-        if c.is_uppercase() {
-            if i > 0 {
-                snake.push('_');
-            }
-            snake.push(c.to_ascii_lowercase());
-        } else {
-            snake.push(c);
-        }
+fn block_state_parts(value: &str) -> (&str, Option<&str>) {
+    if let Some(after_id) = value
+        .strip_prefix("BlockState(id:")
+        .and_then(|rest| rest.split_once(',').map(|(_, value)| value.trim()))
+    {
+        return split_name_and_properties(after_id);
     }
-    let block_id = if snake.contains(':') {
-        snake
-    } else {
-        format!("minecraft:{}", snake)
-    };
-
-    // 3. Format Properties
-    if let Some(props_str) = props_part {
-        // "east: false, north: false"
-        let mut pairs = Vec::new();
-        for part in props_str.split(',') {
-            let part = part.trim();
-            if part.is_empty() {
-                continue;
-            }
-            if let Some((k, v)) = part.split_once(':') {
-                let key = k.trim().to_lowercase();
-                let key = if key == "kind" { "type" } else { &key };
-                pairs.push(format!("{}={}", key, v.trim().to_lowercase()));
-            }
-        }
-        if !pairs.is_empty() {
-            // Sort for deterministic output
-            pairs.sort();
-            return format!("{}[{}]", block_id, pairs.join(","));
-        }
+    if let Some(inner) = value
+        .strip_prefix("BlockState")
+        .and_then(|rest| rest.split_once('{').map(|(_, value)| value))
+    {
+        let end = inner.find([',', '}']).unwrap_or(inner.len());
+        return (inner[..end].trim(), None);
     }
+    let name = value.split([',', '{', ' ', '}']).next().unwrap_or(value);
+    (name, None)
+}
 
-    block_id
+fn split_name_and_properties(value: &str) -> (&str, Option<&str>) {
+    let Some(brace_start) = value.find('{') else {
+        let end = value.find(')').unwrap_or(value.len());
+        return (value[..end].trim(), None);
+    };
+    let end = value.rfind('}').unwrap_or(value.len());
+    (
+        value[..brace_start].trim(),
+        Some(&value[brace_start + 1..end]),
+    )
+}
+
+fn normalize_block_id(name: &str) -> String {
+    let mut normalized = String::new();
+    for (index, character) in name.chars().enumerate() {
+        if character.is_uppercase() && index > 0 {
+            normalized.push('_');
+        }
+        normalized.push(character.to_ascii_lowercase());
+    }
+    if normalized.contains(':') {
+        normalized
+    } else {
+        format!("minecraft:{normalized}")
+    }
+}
+
+fn format_properties(block_id: String, properties: Option<&str>) -> String {
+    let mut pairs: Vec<_> = properties
+        .into_iter()
+        .flat_map(|properties| properties.split(','))
+        .filter_map(|property| property.trim().split_once(':'))
+        .map(|(key, value)| {
+            let key = match key.trim() {
+                "kind" => "type",
+                key => key,
+            };
+            format!("{}={}", key.to_lowercase(), value.trim().to_lowercase())
+        })
+        .collect();
+    if pairs.is_empty() {
+        return block_id;
+    }
+    pairs.sort();
+    format!("{block_id}[{}]", pairs.join(","))
 }
 
 /// Create a Block from a block ID string (potentially with properties)
 /// Input: "minecraft:oak_fence[east=true,west=false]"
 pub fn make_block(block_str: &str) -> Block {
+    let base = Block {
+        id: block_str.to_string(),
+        properties: FxHashMap::default(),
+        nbt: None,
+    };
     // Check for properties: "minecraft:oak_fence[east=true,west=false]"
     if let Some(open_bracket) = block_str.find('[')
         && let Some(close_bracket) = block_str.find(']')
@@ -117,15 +116,11 @@ pub fn make_block(block_str: &str) -> Block {
         return Block {
             id,
             properties,
-            nbt: None,
+            ..base
         };
     }
 
-    Block {
-        id: block_str.to_string(),
-        properties: FxHashMap::default(),
-        nbt: None,
-    }
+    base
 }
 
 /// Normalize block name for comparison (remove minecraft: prefix and underscores)

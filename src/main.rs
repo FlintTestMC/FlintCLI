@@ -10,9 +10,10 @@ use flint_core::format;
 use flint_core::format::{format_number, print_concise_summary, print_test_summary};
 use flint_core::loader::TestLoader;
 use flint_core::results::AssertFailure;
-use flint_core::spatial::calculate_test_offsets_for_batch_default;
 use flint_core::test_spec::{ActionType, TestSpec};
-use spatial_batch::{group_tests_by_world_config, split_tests_by_simulation_distance};
+use spatial_batch::{
+    calculate_test_offsets, group_tests_by_world_config, split_tests_by_simulation_distance,
+};
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -81,7 +82,7 @@ struct Args {
     #[arg(short = 't', long = "tag")]
     tags: Vec<String>,
 
-    /// Interactive mode: listen for chat commands (!search, !run, !run-all, !run-tags)
+    /// Interactive mode: listen for commands from the generated chat-command registry.
     #[arg(short = 'i', long)]
     interactive: bool,
 
@@ -233,8 +234,7 @@ fn print_dry_run(test_files: &[PathBuf]) {
         for test_file in *chunk {
             match TestSpec::from_file(test_file, false) {
                 Ok(test) => {
-                    let offset =
-                        calculate_test_offsets_for_batch_default(std::slice::from_ref(&test))[0];
+                    let offset = calculate_test_offsets(std::slice::from_ref(&test))[0];
                     let assertions = test
                         .timeline
                         .iter()
@@ -296,7 +296,10 @@ fn run_interactive_mode(
         "{} Interactive mode enabled - listening for chat commands",
         "→".yellow().bold()
     );
-    println!("  Commands: !search, !run, !run-all, !run-tags, !list, !reload, !help, !stop");
+    println!(
+        "  Commands: {}",
+        executor::commands::command_aliases(executor::commands::CommandScope::Main, true)
+    );
     println!("  During tests: type 's' to step, 'c' to continue\n");
     println!("{} Connecting to {}...", "→".blue(), server);
     executor.connect(server)?;
@@ -447,7 +450,7 @@ fn main() -> Result<()> {
             }
 
             executor.bot.reset_to_test_origin()?;
-            let offsets = calculate_test_offsets_for_batch_default(sim_batch);
+            let offsets = calculate_test_offsets(sim_batch);
             let bot_position = executor.bot.get_position()?;
             tests_with_offsets.clear();
             for (test_index, (test, offset)) in sim_batch.iter().cloned().zip(offsets).enumerate() {
