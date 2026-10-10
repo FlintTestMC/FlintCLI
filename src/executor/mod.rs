@@ -60,6 +60,7 @@ pub struct TestRunOutput {
 pub struct TestExecutor {
     pub bot: TestBot,
     recorder: Option<recorder::RecorderState>,
+    recorder_dialog_enabled: bool,
     verbose: bool,
     quiet: bool,
     fail_fast: bool,
@@ -68,6 +69,7 @@ pub struct TestExecutor {
     events_path: Option<std::path::PathBuf>,
     events: Option<events::JsonlWriter>,
     enable_breakpoints: bool,
+    last_failure_links: Vec<(String, String)>,
 }
 
 impl Default for TestExecutor {
@@ -75,6 +77,7 @@ impl Default for TestExecutor {
         Self {
             bot: TestBot::new(),
             recorder: None,
+            recorder_dialog_enabled: false,
             verbose: false,
             quiet: false,
             fail_fast: false,
@@ -83,6 +86,7 @@ impl Default for TestExecutor {
             events_path: None,
             events: None,
             enable_breakpoints: true,
+            last_failure_links: Vec::new(),
         }
     }
 }
@@ -169,12 +173,6 @@ impl TestExecutor {
         self.bot
             .send_command_synced(&format!("say Type: {command_hint} (prefix with !)"))?;
 
-        // A recording started from the CLI opens its controls immediately.
-        // Normal interactive mode keeps its existing chat interface unchanged.
-        if self.recorder.is_some() {
-            self.show_recorder_dialog()?;
-        }
-
         // Drain any messages
         tick::drain_chat_messages(&mut self.bot);
 
@@ -184,7 +182,10 @@ impl TestExecutor {
         let mut last_recorder_ui_action = None::<std::time::Instant>;
 
         loop {
-            if self.recorder.is_some() && std::time::Instant::now() >= next_recorder_ui_poll {
+            if self.recorder.is_some()
+                && self.recorder_dialog_enabled
+                && std::time::Instant::now() >= next_recorder_ui_poll
+            {
                 self.poll_recorder_dialog_action()?;
                 next_recorder_ui_poll =
                     std::time::Instant::now() + std::time::Duration::from_millis(500);
@@ -215,6 +216,7 @@ impl TestExecutor {
                 match command.as_str() {
                     _ if commands::from_chat(&command).is_some() => {
                         let flint_command = commands::from_chat(&command).expect("guarded command");
+                        let opens_recorder_dialog = command == "!recorder";
                         let mut context = commands::FlintCommandContext {
                             args: &args,
                             sender: sender.clone(),
@@ -226,6 +228,12 @@ impl TestExecutor {
                         if context.exit_interactive {
                             return Ok(());
                         }
+                        if self.recorder.is_some()
+                            && (is_recorder_ui_action || opens_recorder_dialog)
+                        {
+                            self.recorder_dialog_enabled = true;
+                            self.show_recorder_dialog()?;
+                        }
                     }
 
                     _ => {
@@ -236,12 +244,6 @@ impl TestExecutor {
                             ))?;
                         }
                     }
-                }
-
-                // Dialog actions enter through chat like their command equivalents.
-                // Replace the waiting screen with current recorder state after each action.
-                if self.recorder.is_some() {
-                    self.show_recorder_dialog()?;
                 }
             }
         }
@@ -796,6 +798,30 @@ impl TestExecutor {
                     .map(|detail| (test.name.clone(), detail))
             })
             .collect();
+
+        let base_url = std::env::var("FLINT_VIZ_URL")
+            .unwrap_or_else(|_| "https://flinttestmc.github.io/FlintViz/#".to_string());
+        for (test_name, failure) in &failures {
+            let Some((test, _)) = tests_with_offsets
+                .iter()
+                .find(|(test, _)| test.name == *test_name)
+            else {
+                continue;
+            };
+            let payload = flint_core::viz_link::FailurePayload::new(
+                test.clone(),
+                None,
+                vec![failure.clone()],
+                failure.tick(),
+            );
+            if let Ok(url) = flint_core::viz_link::failure_url(&payload, &base_url) {
+                self.last_failure_links.push((test_name.clone(), url));
+            }
+        }
+        if !failures.is_empty() {
+            self.bot
+                .send_command_synced("say Type !failure for clickable FlintViz failure links")?;
+        }
 
         // A virtual player may have left the shared bot inside a test region. Park the
         // physical bot at the layout center after every run, including playerless runs.

@@ -33,6 +33,15 @@ fn run(executor: &mut TestExecutor, context: &mut FlintCommandContext<'_>) -> Re
     executor.handle_run(context.all_test_files, &test_name, step_mode)
 }
 
+#[main_command(
+    id = "Failure",
+    aliases = ["!failure", "!failures"],
+    help = "!failure [test] - Show clickable links for the latest failed tests"
+)]
+fn failure(executor: &mut TestExecutor, context: &mut FlintCommandContext<'_>) -> Result<()> {
+    executor.handle_failure_link(context.args, context.sender.as_deref())
+}
+
 #[main_command(id = "RunAll", aliases = ["!run-all"], help = "!run-all - Run all tests")]
 fn run_all(executor: &mut TestExecutor, context: &mut FlintCommandContext<'_>) -> Result<()> {
     executor.handle_run_all(context.all_test_files)

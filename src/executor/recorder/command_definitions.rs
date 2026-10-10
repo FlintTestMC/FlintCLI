@@ -23,7 +23,7 @@ fn start(executor: &mut TestExecutor, context: &mut FlintCommandContext<'_>) -> 
 #[recorder_command(
     id = "Open",
     aliases = ["!recorder"],
-    help = "!recorder - Reopen recorder controls"
+    help = "!recorder - Open recorder controls"
 )]
 fn open(executor: &mut TestExecutor, _context: &mut FlintCommandContext<'_>) -> Result<()> {
     if executor.recorder.is_none() {
@@ -37,11 +37,21 @@ fn open(executor: &mut TestExecutor, _context: &mut FlintCommandContext<'_>) -> 
 #[recorder_command(
     id = "Tick",
     aliases = ["!tick", "!next"],
-    help = "!tick/!next - Detect changes and advance one tick",
+    help = "!tick/!next - Advance exactly one tick",
     label = "Next tick"
 )]
 fn tick(executor: &mut TestExecutor, _context: &mut FlintCommandContext<'_>) -> Result<()> {
     executor.handle_record_tick()
+}
+
+#[recorder_command(
+    id = "Snapshot",
+    aliases = ["!snapshot", "!changes"],
+    help = "!snapshot/!changes - Record all block changes since the previous snapshot",
+    label = "Record block changes"
+)]
+fn snapshot(executor: &mut TestExecutor, _context: &mut FlintCommandContext<'_>) -> Result<()> {
+    executor.handle_record_snapshot()
 }
 
 #[recorder_command(

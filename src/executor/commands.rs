@@ -95,4 +95,15 @@ mod tests {
         assert!(command_aliases(CommandScope::Main, true).contains("!record"));
         assert!(!command_aliases(CommandScope::Main, true).contains("!recorder"));
     }
+
+    #[test]
+    fn help_is_not_a_recorder_dialog_command() {
+        let help = COMMANDS
+            .iter()
+            .find(|spec| spec.aliases.contains(&"!help"))
+            .unwrap();
+
+        assert_eq!(help.scope, CommandScope::Main);
+        assert!(help.dialog.is_none());
+    }
 }

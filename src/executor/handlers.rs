@@ -10,7 +10,38 @@ use super::{
 };
 use crate::spatial_batch::{group_tests_by_world_config, pair_tests_with_offsets};
 
-const RECORDER_GUIDANCE: &str = "Recorder commands also work in chat; type !help to list them. Press Esc to close this dialog and move or build. Recording stays active; type !recorder to reopen the controls.";
+const RECORDER_GUIDANCE: &str = "Recorder commands work in chat; type !help to list them or !recorder to open the optional controls. Press Esc to close the controls; recording stays active.";
+
+fn block_snapshot_changes(
+    previous: &std::collections::HashMap<[i32; 3], String>,
+    current: &std::collections::HashMap<[i32; 3], String>,
+    min: [i32; 3],
+    max: [i32; 3],
+) -> Vec<([i32; 3], Option<String>)> {
+    let in_region =
+        |pos: &[i32; 3]| (0..3).all(|axis| pos[axis] >= min[axis] && pos[axis] <= max[axis]);
+    let mut positions: Vec<_> = previous
+        .keys()
+        .filter(|pos| in_region(pos))
+        .chain(current.keys())
+        .copied()
+        .collect();
+    positions.sort_unstable();
+    positions.dedup();
+
+    positions
+        .into_iter()
+        .filter_map(|pos| {
+            let before = previous.get(&pos);
+            let after = current.get(&pos);
+            (before != after).then(|| (pos, after.cloned()))
+        })
+        .collect()
+}
+
+fn position_within_scan(pos: [i32; 3], center: [i32; 3], radius: i32) -> bool {
+    (0..3).all(|axis| (pos[axis] - center[axis]).abs() <= radius)
+}
 
 fn command_action(label: &str, command: &str) -> serde_json::Value {
     serde_json::json!({
@@ -266,6 +297,7 @@ impl TestExecutor {
         test_name: &str,
         step_mode: bool,
     ) -> Result<()> {
+        self.last_failure_links.clear();
         let (test, load_errors) = find_test(all_test_files, test_name);
         self.report_test_load_errors(&load_errors)?;
         if let Some(test) = test {
@@ -295,6 +327,7 @@ impl TestExecutor {
     }
 
     pub(super) fn handle_run_all(&mut self, all_test_files: &[std::path::PathBuf]) -> Result<()> {
+        self.last_failure_links.clear();
         self.bot.send_command(&format!(
             "say Running all {} tests...",
             all_test_files.len()
@@ -318,6 +351,7 @@ impl TestExecutor {
         test_loader: &TestLoader,
         tags: &[String],
     ) -> Result<()> {
+        self.last_failure_links.clear();
         let test_files = test_loader.collect_by_tags(tags);
 
         if test_files.is_empty() {
@@ -345,6 +379,44 @@ impl TestExecutor {
         Ok(())
     }
 
+    pub(super) fn handle_failure_link(&self, args: &[String], sender: Option<&str>) -> Result<()> {
+        let filter = args.join(" ").to_lowercase();
+        let links: Vec<_> = self
+            .last_failure_links
+            .iter()
+            .filter(|(test_name, _)| {
+                filter.is_empty() || test_name.to_lowercase().contains(&filter)
+            })
+            .collect();
+
+        if links.is_empty() {
+            self.bot
+                .send_command("say No matching failures from the latest test run.")?;
+            return Ok(());
+        }
+
+        let target = sender.unwrap_or("@a[name=!flintmc_testbot]");
+        validate_entity_target(target)?;
+        for (test_name, url) in links {
+            let message = serde_json::json!({
+                "text": format!("[Open failure: {test_name}]"),
+                "color": "red",
+                "underlined": true,
+                "click_event": {
+                    "action": "open_url",
+                    "url": url
+                },
+                "hover_event": {
+                    "action": "show_text",
+                    "value": { "text": "Open this failure in FlintViz" }
+                }
+            });
+            self.bot
+                .send_command(&format!("tellraw {target} {message}"))?;
+        }
+        Ok(())
+    }
+
     fn run_test_groups(&mut self, specs: Vec<TestSpec>) -> Result<(usize, usize)> {
         let mut passed = 0;
         let mut failed = 0;
@@ -358,6 +430,36 @@ impl TestExecutor {
     }
 
     // Recorder command handlers
+
+    fn record_player_is_within_scan(&self) -> Result<bool> {
+        let Some(recorder) = self.recorder.as_ref() else {
+            return Ok(false);
+        };
+        let center = recorder.scan_center.unwrap_or([0, 64, 0]);
+        let radius = recorder.scan_radius;
+        let (player_pos, _) = self.query_record_player_pose(recorder)?;
+        let player_pos = [
+            player_pos[0].floor() as i32,
+            player_pos[1].floor() as i32,
+            player_pos[2].floor() as i32,
+        ];
+
+        if position_within_scan(player_pos, center, radius) {
+            return Ok(true);
+        }
+
+        self.bot.send_command(&format!(
+            "say Recorder warning: player [{}, {}, {}] is outside the scan centered at [{}, {}, {}] with radius {}. Move back before recording changes.",
+            player_pos[0],
+            player_pos[1],
+            player_pos[2],
+            center[0],
+            center[1],
+            center[2],
+            radius
+        ))?;
+        Ok(false)
+    }
 
     pub(super) fn handle_record_start(
         &mut self,
@@ -385,22 +487,23 @@ impl TestExecutor {
                 pos[1].floor() as i32,
                 pos[2].floor() as i32,
             ],
-            Err(_) => {
+            Err(error) => {
                 self.bot.send_command(
-                    "say Warning: Could not get player position, using bot position",
+                    "say Recorder could not start: failed to locate the tracked player",
                 )?;
-                self.bot.get_position().unwrap_or([0, 64, 0])
+                eprintln!("Recorder could not query tracked player position: {error:#}");
+                return Ok(());
             }
         };
 
         recorder_state.set_scan_center(scan_center);
-        recorder_state.scan_radius = 10; // 10 block radius for scanning
 
         // Take initial snapshot of blocks
         let initial_blocks = self.scan_blocks_around(scan_center, recorder_state.scan_radius)?;
         recorder_state.snapshot = initial_blocks;
 
         self.recorder = Some(recorder_state);
+        self.recorder_dialog_enabled = false;
 
         // Dialog buttons communicate through a trigger objective, avoiding the
         // confirmation screen Minecraft shows for chat-sending click actions.
@@ -425,10 +528,21 @@ impl TestExecutor {
             return Ok(());
         }
 
-        // Snapshot before advancing tick to capture all changes
-        self.handle_record_snapshot()?;
+        if !self.record_player_is_within_scan()? {
+            return Ok(());
+        }
 
-        // Step the game tick
+        // Refresh the buffer without adding actions, then step exactly one tick.
+        let (scan_center, scan_radius) = {
+            let recorder = self.recorder.as_ref().unwrap();
+            (
+                recorder.scan_center.unwrap_or([0, 64, 0]),
+                recorder.scan_radius,
+            )
+        };
+        let current_blocks = self.scan_blocks_around(scan_center, scan_radius)?;
+        self.recorder.as_mut().unwrap().snapshot = current_blocks;
+
         tick::step_tick(&mut self.bot, false)?;
 
         // Now advance our recording tick counter
@@ -489,6 +603,10 @@ impl TestExecutor {
                 let block_id = block::extract_block_id(&block_str);
                 let recorder = self.recorder.as_mut().unwrap();
                 recorder.add_assertion(pos, &block_id);
+                self.bot.send_command(&format!(
+                    "say Recorder: asserted [{}, {}, {}] is {}",
+                    pos[0], pos[1], pos[2], block_id
+                ))?;
             } else {
                 self.bot.send_command(&format!(
                     "say No block found at [{}, {}, {}]",
@@ -531,13 +649,41 @@ impl TestExecutor {
     }
 
     pub(super) fn handle_record_assert_changes(&mut self) -> Result<()> {
-        let Some(recorder) = self.require_recorder() else {
+        if self.recorder.is_none() {
             self.bot.send_command("say No recording in progress.")?;
             return Ok(());
-        };
+        }
 
-        let count = recorder.convert_actions_to_asserts();
-        let _ = count;
+        if !self.record_player_is_within_scan()? {
+            return Ok(());
+        }
+
+        let recorder = self.recorder.as_ref().unwrap();
+
+        let scan_radius = recorder.scan_radius;
+        let scan_center = recorder.scan_center.unwrap_or([0, 64, 0]);
+        let min = [
+            scan_center[0] - scan_radius,
+            (scan_center[1] - scan_radius).max(-64),
+            scan_center[2] - scan_radius,
+        ];
+        let max = [
+            scan_center[0] + scan_radius,
+            (scan_center[1] + scan_radius).min(319),
+            scan_center[2] + scan_radius,
+        ];
+        let current_blocks = self.scan_region(min, max)?;
+        let changes = block_snapshot_changes(&recorder.snapshot, &current_blocks, min, max);
+
+        let recorder = self.recorder.as_mut().unwrap();
+        for (pos, current_block) in &changes {
+            recorder.add_assertion(*pos, current_block.as_deref().unwrap_or("minecraft:air"));
+        }
+        recorder.snapshot = current_blocks;
+        let count = changes.len();
+        self.bot.send_command(&format!(
+            "say Recorder: converted {count} block changes to assertions"
+        ))?;
         Ok(())
     }
 
@@ -610,63 +756,51 @@ impl TestExecutor {
     }
 
     pub(super) fn handle_record_snapshot(&mut self) -> Result<()> {
-        let recorder = match self.recorder.as_ref() {
-            Some(r) => r,
-            None => {
-                self.bot.send_command("say No recording in progress.")?;
-                return Ok(());
-            }
-        };
+        if self.recorder.is_none() {
+            self.bot.send_command("say No recording in progress.")?;
+            return Ok(());
+        }
+
+        if !self.record_player_is_within_scan()? {
+            return Ok(());
+        }
+
+        let recorder = self.recorder.as_ref().unwrap();
 
         let scan_radius = recorder.scan_radius;
         let scan_center = recorder.scan_center.unwrap_or([0, 64, 0]);
+        let min = [
+            scan_center[0] - scan_radius,
+            (scan_center[1] - scan_radius).max(-64),
+            scan_center[2] - scan_radius,
+        ];
+        let max = [
+            scan_center[0] + scan_radius,
+            (scan_center[1] + scan_radius).min(319),
+            scan_center[2] + scan_radius,
+        ];
 
         // Scan current blocks
-        let current_blocks = self.scan_blocks_around(scan_center, scan_radius)?;
+        let current_blocks = self.scan_region(min, max)?;
 
-        // Compare with initial snapshot and record differences
-        let mut changes = 0;
+        // Compare with the previous saved world state. Both scans contain only
+        // non-air blocks, so a missing current entry is a removal.
+        let changes = block_snapshot_changes(&recorder.snapshot, &current_blocks, min, max);
         let recorder = self.recorder.as_mut().unwrap();
-        let initial_snapshot = recorder.snapshot.clone();
-
-        for (pos, current_block) in &current_blocks {
-            let prev_block = initial_snapshot.get(pos);
-            let is_air = current_block.to_lowercase().contains("air");
-
-            // Check if changed
-            let changed = match prev_block {
-                Some(prev) => prev != current_block,
-                None => !is_air, // New non-air block
-            };
-
-            if changed {
-                if is_air {
-                    recorder.record_remove(*pos);
-                } else {
-                    recorder.record_place(*pos, current_block);
-                }
-                changes += 1;
+        for (pos, current_block) in &changes {
+            match current_block {
+                Some(block) => recorder.record_place(*pos, block),
+                None => recorder.record_remove(*pos),
             }
         }
-
-        // Also check for blocks that were removed (in initial but now air/gone)
-        for pos in initial_snapshot.keys() {
-            if !current_blocks.contains_key(pos) {
-                // Block is gone (probably outside scan range now, skip)
-                continue;
-            }
-            let current = current_blocks.get(pos);
-            if current
-                .map(|b| b.to_lowercase().contains("air"))
-                .unwrap_or(true)
-            {
-                // Was a block, now is air
-                recorder.record_remove(*pos);
-                changes += 1;
-            }
-        }
-
-        let _ = changes;
+        recorder.snapshot = current_blocks;
+        self.bot.send_command(&format!(
+            "say Recorder: snapshot centered at [{}, {}, {}], recorded {} block changes",
+            scan_center[0],
+            scan_center[1],
+            scan_center[2],
+            changes.len()
+        ))?;
         Ok(())
     }
 
@@ -803,13 +937,69 @@ fn validate_entity_target(target: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{RECORDER_GUIDANCE, find_test, is_bot_sender, parse_command, recorder_dialog};
+    use super::{
+        RECORDER_GUIDANCE, block_snapshot_changes, find_test, is_bot_sender, parse_command,
+        position_within_scan, recorder_dialog,
+    };
+
+    #[test]
+    fn scan_boundary_is_inclusive() {
+        assert!(position_within_scan([42, 32, -32], [10, 0, 0], 32));
+        assert!(!position_within_scan([43, 32, -32], [10, 0, 0], 32));
+        assert!(!position_within_scan([42, 33, -32], [10, 0, 0], 32));
+    }
+
+    #[test]
+    fn snapshot_diff_records_additions_changes_and_removals_in_position_order() {
+        let previous = std::collections::HashMap::from([
+            ([2, 0, 0], "minecraft:stone".to_string()),
+            ([0, 0, 0], "minecraft:dirt".to_string()),
+        ]);
+        let current = std::collections::HashMap::from([
+            ([0, 0, 0], "minecraft:grass_block".to_string()),
+            ([1, 0, 0], "minecraft:oak_planks".to_string()),
+        ]);
+
+        assert_eq!(
+            block_snapshot_changes(&previous, &current, [-10, -10, -10], [10, 10, 10]),
+            vec![
+                ([0, 0, 0], Some("minecraft:grass_block".to_string())),
+                ([1, 0, 0], Some("minecraft:oak_planks".to_string())),
+                ([2, 0, 0], None),
+            ]
+        );
+        assert!(
+            block_snapshot_changes(&current, &current, [-10, -10, -10], [10, 10, 10]).is_empty()
+        );
+    }
+
+    #[test]
+    fn snapshot_diff_does_not_remove_blocks_outside_moving_scan_window() {
+        let previous = std::collections::HashMap::from([
+            ([0, 64, 0], "minecraft:stone".to_string()),
+            ([100, 64, 100], "minecraft:dirt".to_string()),
+        ]);
+        let current =
+            std::collections::HashMap::from([([101, 64, 100], "minecraft:oak_planks".to_string())]);
+
+        assert_eq!(
+            block_snapshot_changes(&previous, &current, [90, 54, 90], [110, 74, 110]),
+            vec![
+                ([100, 64, 100], None),
+                ([101, 64, 100], Some("minecraft:oak_planks".to_string())),
+            ]
+        );
+    }
 
     #[test]
     fn recorder_dialog_callback_maps_to_existing_command() {
         assert_eq!(
             parse_command("__flintmc_recorder_assert_changes"),
             Some(("!assert_changes".to_string(), vec![]))
+        );
+        assert_eq!(
+            parse_command("__flintmc_recorder_snapshot"),
+            Some(("!snapshot".to_string(), vec![]))
         );
     }
 
