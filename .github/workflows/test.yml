@@ -22,9 +22,9 @@ jobs:
         java-version: '25'
 
     - name: Set up Rust
-      uses: dtolnay/rust-toolchain@nightly
+      uses: dtolnay/rust-toolchain@master
       with:
-        toolchain: nightly
+        toolchain: nightly-2026-08-21
 
     - name: Cache Rust dependencies
       uses: actions/cache@v4
@@ -35,15 +35,15 @@ jobs:
           ~/.cargo/registry/cache/
           ~/.cargo/git/db/
           target/
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-cargo-nightly-2026-08-21-${{ hashFiles('**/Cargo.lock') }}
         restore-keys: |
-          ${{ runner.os }}-cargo-
+          ${{ runner.os }}-cargo-nightly-2026-08-21-
 
     - name: Download Minecraft Server
       run: |
         mkdir -p minecraft-server
         cd minecraft-server
-        # Download Fabric 26.1.2 (latest compatible version)
+        # Download Fabric 26.2
         wget -O server.jar https://meta.fabricmc.net/v2/versions/loader/26.2/0.19.3/1.1.1/server/jar
         echo "eula=true" > eula.txt
 
@@ -53,7 +53,7 @@ jobs:
         cat > server.properties << EOF
         #Minecraft server properties
         accepts-transfers=false
-        allow-flight=false
+        allow-flight=true
         broadcast-console-to-ops=true
         broadcast-rcon-to-ops=true
         bug-report-link=
@@ -155,12 +155,15 @@ jobs:
         sleep 2
 
     - name: Build FlintMC
-      run: cargo build
+      run: cargo build --locked
+
+    - name: Run unit tests
+      run: cargo test --locked
 
     - name: Run FlintMC Tests
       run: |
         # Run all example tests
-        cargo run -- FlintBenchmark/tests/ --server localhost:25565 --recursive --verbose
+        cargo run --locked -- FlintBenchmark/tests/ --server localhost:25565 --recursive --verbose
       timeout-minutes: 10
 
     - name: Stop Minecraft Server

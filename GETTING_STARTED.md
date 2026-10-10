@@ -6,8 +6,8 @@ FlintMC is now ready to use! Here's how to get started.
 
 1. **Rust Nightly Toolchain** (required by Azalea):
    ```bash
-   rustup install nightly
-   # Already set for this directory via rustup override
+   rustup toolchain install nightly-2026-08-21 --component rustfmt --component clippy
+   # Selected automatically by rust-toolchain.toml
    ```
 
 2. **Minecraft Server** (1.21.8+):
