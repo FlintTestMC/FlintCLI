@@ -358,19 +358,23 @@ fn query_entity_count(bot: &TestBot, selector: &str) -> Result<usize> {
             if sender.is_some() {
                 continue;
             }
-            if message.contains("Test failed") || message.contains("No entity was found") {
-                return Ok(0);
-            }
-            if let Some(count) = message
-                .split(|character: char| !character.is_ascii_digit())
-                .rfind(|part| !part.is_empty())
-                .and_then(|part| part.parse::<usize>().ok())
-            {
+            if let Some(count) = parse_entity_count(&message) {
                 return Ok(count);
             }
         }
     }
     anyhow::bail!("timed out counting entities matching {selector}")
+}
+
+fn parse_entity_count(message: &str) -> Option<usize> {
+    match message.trim() {
+        "Test failed" | "No entity was found" => Some(0),
+        message => message
+            .strip_prefix("Test passed. Count: ")
+            .or_else(|| message.strip_prefix("Test passed, count: "))?
+            .parse()
+            .ok(),
+    }
 }
 
 pub(crate) fn query_daytime(bot: &TestBot) -> Result<u64> {
@@ -467,7 +471,7 @@ fn query_entity_data_message(bot: &TestBot, selector: &str, path: &str) -> Resul
             bot.recv_chat_timeout(std::time::Duration::from_millis(tick::CHAT_POLL_TIMEOUT_MS))
         {
             if message.contains("No entity was found") || message.contains("Found no elements") {
-                anyhow::bail!("entity query failed: {message}");
+                anyhow::bail!("entity query failed for {selector} {path}: {message}");
             }
             if message.contains(path) || message.contains("entity data") {
                 return Ok(message);
@@ -719,9 +723,33 @@ fn reconcile_inventory_slot(
 
 #[cfg(test)]
 mod tests {
-    use super::reconcile_inventory_slot;
+    use super::{parse_entity_count, reconcile_inventory_slot};
     use flint_core::test_spec::{Item, PlayerSlot};
     use std::collections::HashMap;
+
+    #[test]
+    fn entity_count_ignores_unrelated_command_feedback() {
+        for message in [
+            "Command returned 1",
+            "Changed the block at 10, 0, 0",
+            "Removed tag 'flintmc.assert.scanned' from 2 entities",
+            "Snowball has the following entity data: [0.5d, 1.5d, 2.0d]",
+            "The game time is 7",
+        ] {
+            assert_eq!(parse_entity_count(message), None, "{message}");
+        }
+    }
+
+    #[test]
+    fn entity_count_parses_conditional_replies() {
+        assert_eq!(parse_entity_count("Test passed. Count: 1"), Some(1));
+        assert_eq!(parse_entity_count("Test passed. Count: 12"), Some(12));
+        assert_eq!(parse_entity_count("Test passed, count: 1"), Some(1));
+        assert_eq!(parse_entity_count("Test passed, count: 12"), Some(12));
+        assert_eq!(parse_entity_count("Test failed"), Some(0));
+        assert_eq!(parse_entity_count("No entity was found"), Some(0));
+        assert_eq!(parse_entity_count("Test passed, count: invalid"), None);
+    }
 
     #[test]
     fn interaction_does_not_consume_item_when_server_reports_unchanged_stack() {
