@@ -169,33 +169,32 @@ pub fn sprint_ticks(bot: &mut TestBot, ticks: u32, verbose: bool) -> Result<u64>
     while start.elapsed() < timeout {
         if let Some((_, message)) =
             bot.recv_chat_timeout(std::time::Duration::from_millis(CHAT_POLL_TIMEOUT_MS))
+            && message.contains("Sprint completed")
         {
-            if message.contains("Sprint completed") {
-                bot.sync_client_world()?;
-                if let Some(ms_part) = message.split("or ").nth(1)
-                    && let Some(ms_str) = ms_part.split(" ms per tick").next()
-                    && let Ok(ms) = ms_str.trim().parse::<f64>()
-                {
-                    let ms_rounded = ms.ceil() as u64;
-                    if verbose {
-                        println!(
-                            "    {} Sprint {} ticks completed in {} ms per tick",
-                            "⚡".dimmed(),
-                            ticks,
-                            ms_rounded
-                        );
-                    }
-                    return Ok(ms_rounded * ticks as u64);
-                }
+            bot.sync_client_world()?;
+            if let Some(ms_part) = message.split("or ").nth(1)
+                && let Some(ms_str) = ms_part.split(" ms per tick").next()
+                && let Ok(ms) = ms_str.trim().parse::<f64>()
+            {
+                let ms_rounded = ms.ceil() as u64;
                 if verbose {
                     println!(
-                        "    {} Sprint {} ticks completed (timing not parsed)",
+                        "    {} Sprint {} ticks completed in {} ms per tick",
                         "⚡".dimmed(),
-                        ticks
+                        ticks,
+                        ms_rounded
                     );
                 }
-                return Ok(MIN_RETRY_DELAY_MS);
+                return Ok(ms_rounded * ticks as u64);
             }
+            if verbose {
+                println!(
+                    "    {} Sprint {} ticks completed (timing not parsed)",
+                    "⚡".dimmed(),
+                    ticks
+                );
+            }
+            return Ok(MIN_RETRY_DELAY_MS);
         }
     }
 
