@@ -595,15 +595,7 @@ impl TestBot {
             let current = active.slots.get(&slot);
             let desired = slots.get(&slot);
             if active.owner.is_none() || current != desired {
-                let slot_name = slot_to_minecraft_name(slot);
-                let command = match desired {
-                    Some(item) => format!(
-                        "item replace entity flintmc_testbot {} with {} {}",
-                        slot_name, item.id, item.count
-                    ),
-                    None => format!("item replace entity flintmc_testbot {} with air", slot_name),
-                };
-                self.send_command(&command)?;
+                self.send_command(&item_replace_command(slot, desired))?;
             }
         }
 
@@ -788,7 +780,20 @@ impl TestBot {
     }
 }
 
-pub fn slot_to_minecraft_name(slot: PlayerSlot) -> &'static str {
+pub fn item_replace_command(slot: PlayerSlot, item: Option<&Item>) -> String {
+    let slot_name = slot_to_minecraft_name(slot);
+    match item {
+        Some(item) => format!(
+            "item replace entity flintmc_testbot {} with {} {}",
+            slot_name,
+            item.to_command(),
+            item.count
+        ),
+        None => format!("item replace entity flintmc_testbot {} with air", slot_name),
+    }
+}
+
+fn slot_to_minecraft_name(slot: PlayerSlot) -> &'static str {
     match slot {
         PlayerSlot::Hotbar1 => "hotbar.0",
         PlayerSlot::Hotbar2 => "hotbar.1",

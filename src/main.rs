@@ -353,6 +353,27 @@ fn main() -> Result<()> {
         return run_interactive_mode(&args, server, &mut executor, &mut test_loader);
     }
 
+    // Parse every file before connecting so a bad file reports all errors up front
+    let mut parsed_tests = Vec::with_capacity(test_files.len());
+    let mut load_errors = 0;
+    for test_file in test_files {
+        match TestSpec::from_file(&test_file, false) {
+            Ok(test) => parsed_tests.push((test, test_file)),
+            Err(e) => {
+                load_errors += 1;
+                eprintln!(
+                    "{} Failed to load test {}: {}",
+                    "Error:".red().bold(),
+                    test_file.display(),
+                    e
+                );
+            }
+        }
+    }
+    if load_errors > 0 {
+        anyhow::bail!("{load_errors} test file(s) failed to load");
+    }
+
     if verbose {
         println!("{} Connecting to {}...", "→".blue(), server);
     }
@@ -370,8 +391,8 @@ fn main() -> Result<()> {
     }
 
     // Load all tests and run in chunks
-    let total_tests = test_files.len();
-    let chunks: Vec<_> = test_files.chunks(CHUNK_SIZE).collect();
+    let total_tests = parsed_tests.len();
+    let chunks: Vec<_> = parsed_tests.chunks(CHUNK_SIZE).collect();
     let total_chunks = chunks.len();
 
     if verbose {
@@ -401,23 +422,10 @@ fn main() -> Result<()> {
         }
 
         let mut tests_with_offsets = Vec::new();
-        let mut chunk_specs = Vec::new();
-        for test_file in chunk.iter() {
-            match TestSpec::from_file(test_file, false) {
-                Ok(test) => {
-                    test_specs_map.insert(test.name.clone(), (test.clone(), test_file.clone()));
-                    chunk_specs.push(test);
-                }
-                Err(e) => {
-                    eprintln!(
-                        "{} Failed to load test {}: {}",
-                        "Error:".red().bold(),
-                        test_file.display(),
-                        e
-                    );
-                    std::process::exit(1);
-                }
-            }
+        let mut chunk_specs = Vec::with_capacity(chunk.len());
+        for (test, test_file) in chunk.iter() {
+            test_specs_map.insert(test.name.clone(), (test.clone(), test_file.clone()));
+            chunk_specs.push(test.clone());
         }
 
         let config_batches = group_tests_by_world_config(chunk_specs);
