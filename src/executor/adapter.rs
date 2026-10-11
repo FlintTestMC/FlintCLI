@@ -222,6 +222,9 @@ impl FlintWorld for MinecraftWorld {
             return Ok(Vec::new());
         };
         let selector = Self::entity_selector(entity);
+        if query_entity_count(&self.bot, &selector)? == 0 {
+            return Ok(Vec::new());
+        }
         let values = query_entity_numbers(&self.bot, &selector, "Pos")?;
         let pos = values.get(..3).map(|pos| {
             [
