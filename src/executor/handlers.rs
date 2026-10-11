@@ -6,7 +6,7 @@ use flint_core::spatial::pair_tests_with_offsets;
 use flint_core::test_spec::TestSpec;
 use std::path::PathBuf;
 
-use super::{DEFAULT_TESTS_DIR, TestExecutor, block, recorder, tick};
+use super::{DEFAULT_TESTS_DIR, TestExecutor, recorder, tick};
 use crate::spatial_batch::group_tests_by_world_config;
 
 /// Parse command parts from a chat message
@@ -347,8 +347,7 @@ impl TestExecutor {
         }
         // Get block at position
         for pos in blocks {
-            if let Some(block_str) = self.bot.get_block(pos)? {
-                let block_id = block::extract_block_id(&block_str);
+            if let Some(block_id) = self.bot.get_block(pos)? {
                 let recorder = self.recorder.as_mut().unwrap();
                 recorder.add_assertion(pos, &block_id);
 

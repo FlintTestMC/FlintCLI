@@ -751,13 +751,24 @@ impl TestBot {
             let world = world_lock.read();
             let block_state = world.get_block_state(block_pos);
 
-            if let Some(state) = block_state {
-                // Return block state as debug string
-                let state_str = format!("{:?}", state);
-                Ok(Some(state_str))
-            } else {
-                Ok(None)
+            let Some(state) = block_state else {
+                return Ok(None);
+            };
+            let block = Box::<dyn azalea::block::BlockTrait>::from(state);
+            let mut props: Vec<String> = block
+                .property_map()
+                .into_iter()
+                .map(|(name, value)| format!("{name}={value}"))
+                .collect();
+            if props.is_empty() {
+                return Ok(Some(format!("minecraft:{}", block.id())));
             }
+            props.sort();
+            Ok(Some(format!(
+                "minecraft:{}[{}]",
+                block.id(),
+                props.join(",")
+            )))
         } else {
             Ok(None)
         }

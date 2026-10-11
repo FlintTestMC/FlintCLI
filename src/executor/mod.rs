@@ -359,11 +359,13 @@ impl TestExecutor {
             for y in min[1].max(-64)..=max[1].min(319) {
                 for z in min[2]..=max[2] {
                     let pos = [x, y, z];
-                    if let Ok(Some(block)) = self.bot.get_block(pos) {
-                        let block_id = block::extract_block_id(&block);
-                        if !block_id.to_lowercase().contains("air") {
-                            blocks.insert(pos, block_id);
-                        }
+                    if let Ok(Some(block)) = self.bot.get_block(pos)
+                        && !matches!(
+                            block.as_str(),
+                            "minecraft:air" | "minecraft:cave_air" | "minecraft:void_air"
+                        )
+                    {
+                        blocks.insert(pos, block);
                     }
                 }
             }

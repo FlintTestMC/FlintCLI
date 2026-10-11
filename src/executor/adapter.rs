@@ -94,8 +94,7 @@ impl MinecraftWorld {
             let Ok(Some(actual_block_str)) = self.bot.get_block(world_pos) else {
                 return false;
             };
-            let actual = block::make_block(&block::extract_block_id(&actual_block_str));
-            block::placement_matches(&actual, &expected)
+            block::placement_matches(&block::make_block(&actual_block_str), &expected)
         })
     }
 }
@@ -132,19 +131,16 @@ impl FlintWorld for MinecraftWorld {
         let world_pos = self.world_pos(pos);
         for _ in 0..10 {
             if let Ok(Some(actual_block_str)) = self.bot.get_block(world_pos) {
-                let normalized_id = block::extract_block_id(&actual_block_str);
-                let mut block = block::make_block(&normalized_id);
-                if !normalized_id.is_empty() {
-                    let mut values = Vec::with_capacity(requested_nbt.len());
-                    for path in requested_nbt {
-                        values.push((path.clone(), query_block_data(&self.bot, world_pos, path)?));
-                    }
-                    let nbt = flint_core::test_spec::EntityNbt::from_string_values(values);
-                    if !requested_nbt.is_empty() {
-                        block.nbt = Some(nbt);
-                    }
-                    return Ok(block);
+                let mut block = block::make_block(&actual_block_str);
+                let mut values = Vec::with_capacity(requested_nbt.len());
+                for path in requested_nbt {
+                    values.push((path.clone(), query_block_data(&self.bot, world_pos, path)?));
                 }
+                let nbt = flint_core::test_spec::EntityNbt::from_string_values(values);
+                if !requested_nbt.is_empty() {
+                    block.nbt = Some(nbt);
+                }
+                return Ok(block);
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
