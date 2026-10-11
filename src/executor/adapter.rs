@@ -1,4 +1,4 @@
-use crate::bot::{TestBot, slot_to_minecraft_name};
+use crate::bot::{TestBot, item_replace_command};
 use crate::executor::block;
 use crate::executor::tick;
 use anyhow::Result;
@@ -586,15 +586,8 @@ impl MinecraftPlayer {
         } else {
             self.inventory.remove(&slot);
         }
-        let slot_name = slot_to_minecraft_name(slot);
-        let command = match item {
-            Some(item) => format!(
-                "item replace entity flintmc_testbot {} with {} {}",
-                slot_name, item.id, item.count
-            ),
-            None => format!("item replace entity flintmc_testbot {} with air", slot_name),
-        };
-        self.bot.send_command_synced(&command)?;
+        self.bot
+            .send_command_synced(&item_replace_command(slot, item))?;
         self.bot.wait_for_inventory(&self.inventory)?;
         self.record_state();
         Ok(())
